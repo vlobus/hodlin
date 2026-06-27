@@ -1,0 +1,59 @@
+[project]
+name = "hodlin"
+version = "0.1.0"
+description = "Market-context intelligence & secure execution platform (two-domain split, human approval gate)"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "hodlin-contracts",
+    "hodlin-recommend",
+    "hodlin-execute",
+]
+
+# The workspace root is an aggregator, not an installable package itself.
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv.sources]
+hodlin-contracts = { workspace = true }
+hodlin-recommend = { workspace = true }
+hodlin-execute = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "ruff>=0.9",
+    "mypy>=1.14",
+    "import-linter>=2.1",
+    "pytest>=8.3",
+]
+
+# ---------------------------------------------------------------------------
+# Import boundary (D7/D16): recommend and execute may never import each other.
+# Both may import hodlin_contracts; that is the ONLY shared package.
+# ---------------------------------------------------------------------------
+[tool.importlinter]
+root_packages = ["hodlin_contracts", "hodlin_recommend", "hodlin_execute"]
+
+[[tool.importlinter.contracts]]
+name = "recommend and execute are independent"
+type = "independence"
+modules = ["hodlin_recommend", "hodlin_execute"]
+
+[tool.mypy]
+strict = true
+warn_unreachable = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+files = [
+    "packages/contracts/src",
+    "packages/recommend/src",
+    "packages/execute/src",
+    "tests",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

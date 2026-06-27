@@ -216,3 +216,13 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local planning / AI-assistant docs — never commit (kept locally only)
+PROJECT_BRIEF.md
+ACTION_PLAN.md
+DECISIONS.md
+CLAUDE.md
+.claude/
+
+# JetBrains IDE
+.idea/
