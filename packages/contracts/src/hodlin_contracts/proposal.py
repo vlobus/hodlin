@@ -1,0 +1,65 @@
+"""Frozen, validated contracts exchanged between the two domains (D7, D14).
+
+``Proposal`` is what the recommend domain produces and the execute domain
+consumes. It is immutable (``frozen=True``), rejects unknown fields
+(``extra="forbid"``), carries money as ``Decimal`` so it stays exact (never a
+float), uses timezone-aware datetimes only, and requires at least one piece of
+evidence. It deliberately carries **no raw destination address** — the
+recipient is named by label and resolved to an address inside the execute
+domain at tx-build time, so a prompt-injected recommend domain can't direct
+funds anywhere (D14).
+"""
+
+from decimal import Decimal
+from typing import Annotated, Literal
+from uuid import UUID
+
+from pydantic import AwareDatetime, BaseModel, BeforeValidator, ConfigDict, Field
+
+from hodlin_contracts.version import SCHEMA_VERSION
+
+
+def _reject_float(value: object) -> object:
+    """Money must never originate from a float — that reintroduces the
+    binary-rounding error the Decimal type exists to avoid. A string or
+    Decimal parses exactly; a float does not."""
+    if isinstance(value, float):
+        raise ValueError("money must be a Decimal or string, not a float")
+    return value
+
+
+Money = Annotated[Decimal, BeforeValidator(_reject_float)]
+
+Action = Literal["buy", "sell", "hold", "alert"]
+
+
+class _Frozen(BaseModel):
+    """Base config shared by every contract: immutable, no unknown fields."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+class EvidenceRef(_Frozen):
+    """A single citable source behind a proposal — a news item, a price
+    anomaly, or a sentiment score. At least one is required on every
+    proposal so a recommendation can always be traced back to what it saw."""
+
+    kind: Literal["anomaly", "news", "sentiment", "price"]
+    source: str = Field(min_length=1)
+    ref: str = Field(min_length=1)
+    observed_at: AwareDatetime
+
+
+class Proposal(_Frozen):
+    """An AI-authored recommendation. Self-describing and immutable; becomes
+    load-bearing (canonical-hashed and token-signed) in slice C."""
+
+    schema_version: Literal["1.0"] = SCHEMA_VERSION
+    proposal_id: UUID
+    asset: str = Field(min_length=1)
+    action: Action
+    amount: Money = Field(ge=0)
+    recipient_label: str = Field(min_length=1)
+    reasoning: str = Field(min_length=1)
+    evidence: tuple[EvidenceRef, ...] = Field(min_length=1)
+    created_at: AwareDatetime
