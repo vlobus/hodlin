@@ -142,6 +142,25 @@ def test_canonical_hash_ignores_whole_number_scale() -> None:
     assert "E" not in canonical_json(a)
 
 
+def test_large_whole_amount_normalizes_without_crash() -> None:
+    # Digit count beyond the default decimal precision must not raise, and
+    # must stay plain (no scientific notation) in the canonical form.
+    pid = uuid4()
+    ts = datetime(2026, 6, 28, 12, 5, tzinfo=UTC)
+    a = _proposal(proposal_id=pid, created_at=ts, amount="1E+30")
+    b = _proposal(proposal_id=pid, created_at=ts, amount="1" + "0" * 30)
+    assert canonical_hash(a) == canonical_hash(b)
+    assert "E" not in canonical_json(a)
+
+
+def test_negative_zero_hashes_as_zero() -> None:
+    pid = uuid4()
+    ts = datetime(2026, 6, 28, 12, 5, tzinfo=UTC)
+    a = _proposal(proposal_id=pid, created_at=ts, amount=Decimal("-0"))
+    b = _proposal(proposal_id=pid, created_at=ts, amount=Decimal("0"))
+    assert canonical_hash(a) == canonical_hash(b)
+
+
 def test_canonical_hash_ignores_timezone_offset() -> None:
     # The same instant in two timezones must hash identically.
     pid = uuid4()

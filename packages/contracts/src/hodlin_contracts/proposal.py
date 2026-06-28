@@ -40,13 +40,15 @@ def _normalize_money(value: Decimal) -> Decimal:
     """Reduce a money amount to a single canonical form so meaning-equal
     amounts hash identically: ``0.50`` and ``0.5`` must serialize the same.
     ``normalize`` strips trailing zeros but can yield exponent notation for
-    whole numbers (``Decimal("1E+2")``); quantize those back to plain digits
-    so the canonical string is never scientific."""
+    whole numbers (``Decimal("1E+2")``); rebuilding from the fixed-point
+    string form keeps the canonical value plain (never scientific) without
+    ``quantize``, which would raise ``InvalidOperation`` on amounts whose
+    digit count exceeds the decimal context precision. ``Decimal`` parses a
+    string exactly, free of context limits."""
     normalized = value.normalize()
-    exponent = normalized.as_tuple().exponent
-    if isinstance(exponent, int) and exponent > 0:
-        normalized = normalized.quantize(Decimal(1))
-    return normalized
+    if normalized == 0:
+        return Decimal(0)  # collapse signed/scaled zeros (e.g. -0, 0E+2) to "0"
+    return Decimal(format(normalized, "f"))
 
 
 def _to_utc(value: datetime) -> datetime:
