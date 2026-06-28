@@ -99,7 +99,7 @@ class PriceBarRepository:
 
     async def recent(self, symbol: str, interval: str, limit: int) -> list[PriceBar]:
         """The newest ``limit`` bars for a symbol/interval, newest first — the
-        read the rolling z-score consumes. Served by ``ix_price_bars_recent``."""
+        read the rolling z-score consumes. Served by the natural-key index."""
         stmt = (
             select(tables.PriceBar)
             .join(tables.Asset, tables.PriceBar.asset_id == tables.Asset.id)

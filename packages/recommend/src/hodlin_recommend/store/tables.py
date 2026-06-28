@@ -35,9 +35,10 @@ class Asset(Base):
     everything else references; ``id`` is the surrogate FK target."""
 
     __tablename__ = "assets"
+    __table_args__ = (UniqueConstraint("symbol", name="uq_assets_symbol"),)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    symbol: Mapped[str] = mapped_column(String(32), unique=True)
+    symbol: Mapped[str] = mapped_column(String(32))
     kind: Mapped[str] = mapped_column(String(16))  # "stock" | "crypto"
     name: Mapped[str | None] = mapped_column(String(128))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -50,8 +51,9 @@ class PriceBar(Base):
 
     __tablename__ = "price_bars"
     __table_args__ = (
+        # The unique constraint's backing b-tree also serves the "last N bars"
+        # read (ORDER BY ts DESC LIMIT N) via a backward scan — no separate index.
         UniqueConstraint("asset_id", "interval", "ts", name="uq_price_bars_natural"),
-        Index("ix_price_bars_recent", "asset_id", "interval", "ts"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -138,11 +140,10 @@ class Explanation(Base):
     ``evidence`` is the structured list of EvidenceRef the proposal cites."""
 
     __tablename__ = "explanations"
+    __table_args__ = (UniqueConstraint("anomaly_id", name="uq_explanations_anomaly"),)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    anomaly_id: Mapped[int] = mapped_column(
-        ForeignKey("anomalies.id", ondelete="CASCADE"), unique=True
-    )
+    anomaly_id: Mapped[int] = mapped_column(ForeignKey("anomalies.id", ondelete="CASCADE"))
     reasoning: Mapped[str] = mapped_column(Text)
     evidence: Mapped[list[dict[str, object]]] = mapped_column(JSONB)
     model_version: Mapped[str] = mapped_column(String(64))
@@ -156,9 +157,10 @@ class SourceHealth(Base):
     succeeds or degrades, so the bot can serve last-known data and flag a source."""
 
     __tablename__ = "source_health"
+    __table_args__ = (UniqueConstraint("source", name="uq_source_health_source"),)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    source: Mapped[str] = mapped_column(String(32), unique=True)
+    source: Mapped[str] = mapped_column(String(32))
     status: Mapped[str] = mapped_column(String(16))  # ok | degraded | down
     last_ok_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_error: Mapped[str | None] = mapped_column(Text)

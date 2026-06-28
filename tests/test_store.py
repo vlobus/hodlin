@@ -53,6 +53,34 @@ def test_domain_models_are_frozen() -> None:
         asset.symbol = "MSFT"
 
 
+def test_price_bar_rejects_naive_datetime() -> None:
+    with pytest.raises(ValidationError):
+        PriceBar(
+            symbol="BTC-USD",
+            interval="1d",
+            ts=datetime(2026, 6, 28),  # intentionally naive
+            open=Decimal("1"),
+            high=Decimal("1"),
+            low=Decimal("1"),
+            close=Decimal("1"),
+            source="seed",
+        )
+
+
+def test_price_bar_rejects_float_price() -> None:
+    with pytest.raises(ValidationError):
+        PriceBar(
+            symbol="BTC-USD",
+            interval="1d",
+            ts=datetime(2026, 6, 28, tzinfo=UTC),
+            open=1.5,  # type: ignore[arg-type]
+            high=Decimal("1"),
+            low=Decimal("1"),
+            close=Decimal("1"),
+            source="seed",
+        )
+
+
 def test_news_item_optional_fields_default_none() -> None:
     item = NewsItem(
         symbol="AAPL",

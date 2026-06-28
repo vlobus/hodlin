@@ -46,7 +46,6 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["asset_id"], ["assets.id"], ondelete="CASCADE"),
         sa.UniqueConstraint("asset_id", "interval", "ts", name="uq_price_bars_natural"),
     )
-    op.create_index("ix_price_bars_recent", "price_bars", ["asset_id", "interval", "ts"])
 
     op.create_table(
         "news_items",
@@ -137,6 +136,5 @@ def downgrade() -> None:
     op.drop_table("sentiments")
     op.drop_index("ix_news_items_asset", table_name="news_items")
     op.drop_table("news_items")
-    op.drop_index("ix_price_bars_recent", table_name="price_bars")
     op.drop_table("price_bars")
     op.drop_table("assets")
