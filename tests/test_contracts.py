@@ -5,7 +5,7 @@ exact money, tz-aware time, traceable evidence, and a content hash that depends
 on meaning rather than field order.
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 from uuid import uuid4
 
@@ -120,6 +120,53 @@ def test_canonical_hash_changes_with_meaning() -> None:
     a = _proposal(proposal_id=pid, created_at=ts, amount=Decimal("0.5"))
     b = _proposal(proposal_id=pid, created_at=ts, amount=Decimal("0.6"))
     assert canonical_hash(a) != canonical_hash(b)
+
+
+def test_canonical_hash_ignores_decimal_scale() -> None:
+    # 0.5 and 0.50 are equal in meaning; their proposals must hash identically.
+    pid = uuid4()
+    ts = datetime(2026, 6, 28, 12, 5, tzinfo=UTC)
+    a = _proposal(proposal_id=pid, created_at=ts, amount=Decimal("0.5"))
+    b = _proposal(proposal_id=pid, created_at=ts, amount="0.50")
+    assert a == b
+    assert canonical_hash(a) == canonical_hash(b)
+
+
+def test_canonical_hash_ignores_whole_number_scale() -> None:
+    # Whole amounts must not leak scientific notation ("1E+2") into the hash.
+    pid = uuid4()
+    ts = datetime(2026, 6, 28, 12, 5, tzinfo=UTC)
+    a = _proposal(proposal_id=pid, created_at=ts, amount=Decimal("100"))
+    b = _proposal(proposal_id=pid, created_at=ts, amount="100.00")
+    assert canonical_hash(a) == canonical_hash(b)
+    assert "E" not in canonical_json(a)
+
+
+def test_canonical_hash_ignores_timezone_offset() -> None:
+    # The same instant in two timezones must hash identically.
+    pid = uuid4()
+    utc_ts = datetime(2026, 6, 28, 12, 5, tzinfo=UTC)
+    offset_ts = datetime(2026, 6, 28, 13, 5, tzinfo=timezone(timedelta(hours=1)))
+    a = _proposal(proposal_id=pid, created_at=utc_ts)
+    b = _proposal(proposal_id=pid, created_at=offset_ts)
+    assert a == b
+    assert canonical_hash(a) == canonical_hash(b)
+
+
+def test_evidence_ref_is_frozen() -> None:
+    ev = _evidence()
+    with pytest.raises(ValidationError):
+        ev.source = "other"
+
+
+def test_evidence_ref_rejects_unknown_fields() -> None:
+    with pytest.raises(ValidationError):
+        _evidence(extra="nope")
+
+
+def test_whitespace_only_strings_rejected() -> None:
+    with pytest.raises(ValidationError):
+        _proposal(asset="   ")
 
 
 def test_canonical_json_has_sorted_keys_and_no_whitespace() -> None:
