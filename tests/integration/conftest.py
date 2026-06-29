@@ -32,7 +32,7 @@ def postgres_url() -> Iterator[str]:
     except ImportError:  # pragma: no cover
         pytest.skip("testcontainers not installed")
     try:
-        with PostgresContainer("postgres:16-alpine", driver="asyncpg") as postgres:
+        with PostgresContainer("postgres:18-alpine", driver="asyncpg") as postgres:
             yield postgres.get_connection_url()
     except Exception as exc:  # pragma: no cover - docker absent / image pull failed
         pytest.skip(

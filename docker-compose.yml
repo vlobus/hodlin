@@ -8,7 +8,7 @@
 #     uv run pytest tests/integration
 services:
   db:
-    image: postgres:16-alpine
+    image: postgres:18-alpine
     environment:
       POSTGRES_USER: hodlin
       POSTGRES_PASSWORD: hodlin
