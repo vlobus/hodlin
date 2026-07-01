@@ -1,9 +1,9 @@
 """Alembic environment — runs migrations against the async engine.
 
-The database URL comes from the DATABASE_URL env var (set by docker-compose,
-CI, or tests) and falls back to the app default, so no connection string is
-baked into ``alembic.ini``. ``target_metadata`` is the ORM's metadata, which
-``--autogenerate`` diffs to produce new revisions.
+The database URL is read directly from the DATABASE_URL env var (set by
+docker-compose, CI, or tests) — we don't build the full ``Settings`` here, since
+migrations shouldn't require the connector secrets. ``target_metadata`` is the
+ORM's metadata, which ``--autogenerate`` diffs to produce new revisions.
 """
 
 import asyncio
@@ -11,7 +11,6 @@ import os
 from logging.config import fileConfig
 
 from alembic import context
-from hodlin_recommend.config import Settings
 from hodlin_recommend.store import tables  # noqa: F401  (registers ORM models)
 from hodlin_recommend.store.db import Base
 from sqlalchemy import Connection, pool
@@ -21,7 +20,10 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-config.set_main_option("sqlalchemy.url", os.getenv("DATABASE_URL", Settings().database_url))
+database_url = os.getenv("DATABASE_URL")
+if not database_url:
+    raise RuntimeError("DATABASE_URL must be set to run migrations")
+config.set_main_option("sqlalchemy.url", database_url)
 
 target_metadata = Base.metadata
 

@@ -9,6 +9,9 @@ dependencies = [
     "asyncpg>=0.30",
     "alembic>=1.14",
     "pydantic-settings>=2.7",
+    "httpx>=0.28",
+    "tenacity>=9.0",
+    "aiolimiter>=1.2",
 ]
 
 [build-system]
