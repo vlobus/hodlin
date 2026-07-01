@@ -5,6 +5,10 @@ description = "Recommend domain: intelligence only, holds no keys and moves no m
 requires-python = ">=3.14"
 dependencies = [
     "hodlin-contracts",
+    "sqlalchemy[asyncio]>=2.0",
+    "asyncpg>=0.30",
+    "alembic>=1.14",
+    "pydantic-settings>=2.7",
 ]
 
 [build-system]
