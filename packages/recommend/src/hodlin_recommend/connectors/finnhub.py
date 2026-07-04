@@ -71,7 +71,10 @@ class FinnhubNewsSource:
         )
         if not isinstance(payload, list):
             raise SourceUnavailable(self.source, "expected a JSON array of articles")
-        return [_parse_article(symbol, raw) for raw in payload]
+        try:
+            return [_parse_article(symbol, raw) for raw in payload]
+        except (KeyError, TypeError, ValueError) as exc:
+            raise SourceUnavailable(self.source, f"malformed article: {exc}") from exc
 
     async def health(self) -> bool:
         """Liveness: a today-window news fetch that doesn't raise means healthy."""

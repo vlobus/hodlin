@@ -89,7 +89,10 @@ class MassivePriceBarSource:
         bars = payload.get("bars") if isinstance(payload, Mapping) else None
         if not isinstance(bars, list):
             raise SourceUnavailable(self.source, "expected an object with a 'bars' array")
-        return [_parse_bar(symbol, interval, raw) for raw in bars]
+        try:
+            return [_parse_bar(symbol, interval, raw) for raw in bars]
+        except (KeyError, TypeError, ValueError) as exc:
+            raise SourceUnavailable(self.source, f"malformed bar: {exc}") from exc
 
     async def health(self) -> bool:
         try:

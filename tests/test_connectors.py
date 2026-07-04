@@ -154,6 +154,41 @@ async def test_source_unavailable_is_catchable_by_caller(rate: RateLimiter) -> N
         assert degraded
 
 
+async def test_malformed_body_raises_source_unavailable(rate: RateLimiter) -> None:
+    async with httpx.AsyncClient() as client, respx.mock:
+        respx.get(f"{_BASE}/company-news").mock(return_value=httpx.Response(200, text="not json"))
+        src = FinnhubNewsSource(client, api_key="k", base_url=_BASE, rate=rate, retry=_FAST)
+        with pytest.raises(SourceUnavailable):
+            await src.get_news("AAPL", datetime(2024, 6, 1, tzinfo=UTC))
+
+
+async def test_missing_field_raises_source_unavailable(rate: RateLimiter) -> None:
+    async with httpx.AsyncClient() as client, respx.mock:
+        # article missing the required "id"/"datetime" keys
+        respx.get(f"{_BASE}/company-news").mock(
+            return_value=httpx.Response(200, json=[{"headline": "x"}])
+        )
+        src = FinnhubNewsSource(client, api_key="k", base_url=_BASE, rate=rate, retry=_FAST)
+        with pytest.raises(SourceUnavailable):
+            await src.get_news("AAPL", datetime(2024, 6, 1, tzinfo=UTC))
+
+
+async def test_decimal_precision_survives_the_wire(rate: RateLimiter) -> None:
+    # A JSON number with more digits than a float can hold must reach the model
+    # exactly — proves parse_float=Decimal, not response.json()'s float parsing.
+    body = (
+        '{"bars":[{"ts":"2024-06-03T00:00:00Z","open":0.12345678901234567,'
+        '"high":0.12345678901234567,"low":0.12345678901234567,'
+        '"close":0.12345678901234567,"volume":1}]}'
+    )
+    async with httpx.AsyncClient() as client, respx.mock:
+        respx.get(f"{_BASE}/aggregates").mock(return_value=httpx.Response(200, text=body))
+        src = MassivePriceBarSource(client, api_key="k", base_url=_BASE, rate=rate, retry=_FAST)
+        now = datetime(2024, 6, 3, tzinfo=UTC)
+        bars = await src.get_candles("AAPL", "1d", now, now)
+    assert bars[0].close == Decimal("0.12345678901234567")
+
+
 # Seed fallback --------------------------------------------------------------
 
 

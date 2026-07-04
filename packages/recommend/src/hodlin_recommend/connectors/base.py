@@ -11,9 +11,11 @@ non-retryable error like 403 — raise ``SourceUnavailable`` so the caller can
 fall back to stored data and keep the bot alive.
 """
 
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal
 from types import TracebackType
 from typing import Any, Protocol, runtime_checkable
 
@@ -127,7 +129,9 @@ async def request_json(
         else:
             response = await client.get(url, params=params)
         response.raise_for_status()
-        return response.json()
+        # parse_float=Decimal keeps money exact: JSON numbers never become floats
+        # (which the domain models reject), so precision survives from the wire.
+        return json.loads(response.text, parse_float=Decimal)
 
     try:
         async for attempt in AsyncRetrying(
@@ -138,7 +142,7 @@ async def request_json(
         ):
             with attempt:
                 return await _once()
-    except httpx.HTTPError as exc:
+    except (httpx.HTTPError, json.JSONDecodeError) as exc:
         raise SourceUnavailable(source, exc) from exc
     # Unreachable: the loop either returns or reraises, but satisfies the type.
     raise SourceUnavailable(source, "retries exhausted")
