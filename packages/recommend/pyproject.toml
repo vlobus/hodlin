@@ -16,6 +16,7 @@ dependencies = [
     "transformers>=4.48",
     "torch>=2.6",
     "uvicorn>=0.34",
+    "anthropic>=0.40",
 ]
 
 [build-system]

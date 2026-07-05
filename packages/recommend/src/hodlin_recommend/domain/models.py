@@ -9,7 +9,8 @@ repositories resolve ``symbol -> asset_id`` on the way in and out. Money is
 from decimal import Decimal
 from typing import Annotated
 
-from pydantic import AwareDatetime, BaseModel, BeforeValidator, ConfigDict
+from hodlin_contracts import EvidenceRef
+from pydantic import AwareDatetime, BaseModel, BeforeValidator, ConfigDict, Field
 
 
 def _reject_float(value: object) -> object:
@@ -69,3 +70,19 @@ class Anomaly(_DomainModel):
     return_pct: Decimal
     direction: str  # "up" | "down"
     window: int
+
+
+class Explanation(_DomainModel):
+    """The LLM-authored "why" for one anomaly, keyed by the anomaly's natural
+    key (the repository resolves the surrogate FK). ``evidence`` uses the
+    shared contract type so it can be lifted into a ``Proposal`` unchanged;
+    >= 1 entry is guaranteed (the anomaly cites itself)."""
+
+    symbol: str
+    interval: str
+    bar_ts: AwareDatetime
+    reasoning: str = Field(min_length=1)
+    evidence: tuple[EvidenceRef, ...] = Field(min_length=1)
+    model_version: str
+
+    model_config = ConfigDict(frozen=True, protected_namespaces=())
