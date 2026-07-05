@@ -13,13 +13,15 @@ is built exactly once at the composition root and shared across requests.
 
 from collections.abc import Mapping
 from decimal import Decimal
-from typing import Protocol, runtime_checkable
+from typing import Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict
 
 FINBERT_MODEL_ID = "ProsusAI/finbert"
 
-_LABELS = ("positive", "negative", "neutral")
+Label = Literal["positive", "negative", "neutral"]
+
+_LABELS: tuple[Label, ...] = ("positive", "negative", "neutral")
 
 # Probabilities are statistics, not money, but they land in NUMERIC columns and
 # JSON payloads — quantized Decimal keeps them exact and readable end to end.
@@ -32,7 +34,7 @@ class SentimentScore(BaseModel):
 
     model_config = ConfigDict(frozen=True, protected_namespaces=())
 
-    label: str  # "positive" | "negative" | "neutral"
+    label: Label
     prob_positive: Decimal
     prob_negative: Decimal
     prob_neutral: Decimal
@@ -42,9 +44,12 @@ class SentimentScore(BaseModel):
 def to_score(probs: Mapping[str, float], model_version: str) -> SentimentScore:
     """Pure mapping from raw class probabilities to a ``SentimentScore``:
     label = argmax, floats quantized once at this boundary. Raises if the
-    model didn't produce exactly the three expected classes."""
+    model didn't produce exactly the three expected classes, or a probability
+    is outside [0, 1] (e.g. an adapter passed raw logits)."""
     if set(probs) != set(_LABELS):
         raise ValueError(f"expected probabilities for {_LABELS}, got {sorted(probs)}")
+    if any(not 0.0 <= probs[name] <= 1.0 for name in _LABELS):
+        raise ValueError(f"probabilities must be within [0, 1], got {dict(probs)}")
     label = max(_LABELS, key=lambda name: probs[name])
     as_decimal = {name: Decimal(f"{probs[name]:f}").quantize(_PROB_PLACES) for name in _LABELS}
     return SentimentScore(

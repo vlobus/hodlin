@@ -10,6 +10,8 @@ from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from hodlin_recommend.domain.sentiment import Label
+
 
 class SentimentRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
@@ -27,6 +29,6 @@ class SentimentProbs(BaseModel):
 class SentimentResponse(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
 
-    label: str  # "positive" | "negative" | "neutral"
+    label: Label
     probs: SentimentProbs
     model_version: str

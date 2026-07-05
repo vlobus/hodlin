@@ -1,15 +1,16 @@
 """Sentiment serving tests — all offline; torch/FinBERT never load.
 
 Covers the T6 acceptance: POST /v1/sentiment returns label + probs +
-model_version, and a concurrency test proves inference runs off the event
-loop (a liveness ping stays fast while a slow inference is in flight).
-A real-FinBERT smoke test exists but is opt-in via HODLIN_TEST_FINBERT=1
-(first run downloads ~440 MB).
+model_version, and an event-gated concurrency test proves inference runs off
+the event loop (a liveness ping is served while an inference is provably in
+flight). A real-FinBERT smoke test exists but is opt-in via
+HODLIN_TEST_FINBERT=1 (first run downloads ~440 MB).
 """
 
 import asyncio
 import os
-import time
+import sys
+import threading
 from decimal import Decimal
 
 import httpx
@@ -17,23 +18,28 @@ import pytest
 from hodlin_recommend.domain.sentiment import SentimentModel, SentimentScore, to_score
 from hodlin_recommend.serving.app import create_app
 
-_SLOW_INFERENCE = 0.3  # seconds the fake model blocks its thread
-_PING_BUDGET = 0.15  # a ping must return well inside the inference window
-
 
 class FakeSentimentModel:
-    """Deterministic stand-in: fixed probabilities, optional thread-blocking
-    delay to simulate a real forward pass."""
+    """Deterministic stand-in: fixed probabilities, instant."""
 
     model_version = "fake:1"
 
-    def __init__(self, delay: float = 0.0) -> None:
-        self._delay = delay
+    def score(self, text: str) -> SentimentScore:
+        return to_score({"positive": 0.7, "negative": 0.1, "neutral": 0.2}, self.model_version)
+
+
+class BlockingSentimentModel(FakeSentimentModel):
+    """Blocks its worker thread until the test says otherwise — a forward pass
+    of controllable duration, with no wall-clock guessing."""
+
+    def __init__(self) -> None:
+        self.started = threading.Event()  # set when inference begins
+        self.release = threading.Event()  # test sets this to let inference finish
 
     def score(self, text: str) -> SentimentScore:
-        if self._delay:
-            time.sleep(self._delay)  # blocks its thread, as real inference would
-        return to_score({"positive": 0.7, "negative": 0.1, "neutral": 0.2}, self.model_version)
+        self.started.set()
+        assert self.release.wait(timeout=5), "test never released the inference"
+        return super().score(text)
 
 
 def _client(model: SentimentModel) -> httpx.AsyncClient:
@@ -58,6 +64,12 @@ def test_to_score_rejects_wrong_label_set() -> None:
         to_score({"positive": 0.5, "negative": 0.5}, "m:1")
 
 
+def test_to_score_rejects_out_of_range_probabilities() -> None:
+    # Raw logits sneaking past softmax must fail loudly, not score "validly".
+    with pytest.raises(ValueError, match=r"\[0, 1\]"):
+        to_score({"positive": 3.2, "negative": -1.1, "neutral": 0.4}, "m:1")
+
+
 def test_fake_satisfies_the_protocol() -> None:
     assert isinstance(FakeSentimentModel(), SentimentModel)
 
@@ -75,6 +87,10 @@ async def test_sentiment_endpoint_returns_label_probs_and_model_version() -> Non
     # Decimals cross the wire as strings — exact, never a binary float.
     assert body["probs"] == {"positive": "0.700000", "negative": "0.100000", "neutral": "0.200000"}
     assert body["model_version"] == "fake:1"
+    if not os.getenv("HODLIN_TEST_FINBERT"):
+        # The default suite must exercise serving without the heavyweights.
+        assert "torch" not in sys.modules
+        assert "transformers" not in sys.modules
 
 
 async def test_sentiment_endpoint_rejects_blank_text() -> None:
@@ -94,23 +110,23 @@ async def test_health_live() -> None:
 
 
 async def test_inference_does_not_block_the_event_loop() -> None:
-    """Fire a slow inference, then prove the loop still serves a liveness ping
-    while that inference is grinding in its worker thread. If score() ran on
-    the loop, the ping couldn't complete before the inference finishes."""
-    async with _client(FakeSentimentModel(delay=_SLOW_INFERENCE)) as client:
-        slow = asyncio.create_task(
-            client.post("/v1/sentiment", json={"text": "Profits collapsed."})
-        )
-        await asyncio.sleep(0.05)  # let the slow request reach the model
+    """Start an inference that blocks its worker thread indefinitely, then
+    prove the event loop still serves a liveness ping *while it is provably
+    in flight*. Event-gated, not timed — no flaky wall-clock assertions. If
+    score() ran on the loop, the loop would be stuck inside it and the ping
+    (and the release) could never happen."""
+    model = BlockingSentimentModel()
+    async with _client(model) as client:
+        slow = asyncio.create_task(client.post("/v1/sentiment", json={"text": "Profits fell."}))
+        # Wait (off the loop) until the forward pass has actually started.
+        assert await asyncio.to_thread(model.started.wait, 5)
 
-        started = time.monotonic()
         ping = await client.get("/health/live")
-        ping_latency = time.monotonic() - started
 
         assert ping.status_code == 200
-        assert not slow.done()  # inference genuinely still in flight
-        assert ping_latency < _PING_BUDGET
+        assert not slow.done()  # inference is still grinding in its thread
 
+        model.release.set()
         response = await slow
         assert response.status_code == 200
         assert response.json()["label"] == "positive"
