@@ -12,6 +12,10 @@ dependencies = [
     "httpx>=0.28",
     "tenacity>=9.0",
     "aiolimiter>=1.2",
+    "fastapi>=0.115",
+    "transformers>=4.48",
+    "torch>=2.6",
+    "uvicorn>=0.34",
 ]
 
 [build-system]
