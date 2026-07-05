@@ -95,9 +95,16 @@ def test_invalid_inputs_raise() -> None:
     bars = _bars([*_CALM, "105"])
     with pytest.raises(ValueError, match="window"):
         detect_latest(bars, window=1, threshold=2.5)
+    with pytest.raises(ValueError, match="threshold"):
+        detect_latest(bars, window=_WINDOW, threshold=0)
     mixed = bars + _bars(["100"], symbol="OTHER")
     with pytest.raises(ValueError, match="one symbol"):
         detect_series(mixed, window=_WINDOW, threshold=2.5)
+    with pytest.raises(ValueError, match="positive"):
+        detect_latest(_bars([*_CALM, "0"]), window=_WINDOW, threshold=2.5)
+    duplicate_ts = [*bars, bars[-1].model_copy(update={"close": Decimal("104")})]
+    with pytest.raises(ValueError, match="distinct timestamps"):
+        detect_latest(duplicate_ts, window=_WINDOW, threshold=2.5)
 
 
 async def test_seed_data_contains_the_demo_anomaly() -> None:

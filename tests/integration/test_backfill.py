@@ -13,7 +13,7 @@ from hodlin_recommend.connectors.seed_bars import SeedBarSource
 from hodlin_recommend.domain.asset_config import AssetConfig
 from hodlin_recommend.domain.models import PriceBar
 from hodlin_recommend.ingest.backfill import backfill_assets
-from hodlin_recommend.store.repositories import AnomalyRepository
+from hodlin_recommend.store.repositories import AnomalyRepository, PriceBarRepository
 from sqlalchemy.ext.asyncio import AsyncSession
 
 # Inside the committed CSV's date range — seed bars are historical.
@@ -76,6 +76,7 @@ async def test_dead_source_skips_asset_without_failing_cold_start(
     results = await backfill_assets(session, source, _ASSETS)
 
     assert [result.symbol for result in results] == ["AAPL", "BTC-USD"]
-    for result in results:
+    for config, result in zip(_ASSETS, results, strict=True):
         assert result.skipped is not None
-        assert result.bars_stored == 0
+        # The database itself must be empty for the asset, not just the report.
+        assert await PriceBarRepository(session).recent(config.symbol, config.interval, 10) == []

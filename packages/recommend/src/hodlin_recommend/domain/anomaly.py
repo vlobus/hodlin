@@ -25,14 +25,21 @@ _Z_PLACES = Decimal("0.000001")
 _PCT_PLACES = Decimal("0.0001")
 
 
-def _validate(bars: Sequence[PriceBar], window: int) -> list[PriceBar]:
+def _validate(bars: Sequence[PriceBar], window: int, threshold: float) -> list[PriceBar]:
     """Reject inputs the math can't honestly answer for; return bars oldest-first."""
     if window < 2:
         raise ValueError(f"window must be >= 2 to compute a sample stddev, got {window}")
+    if threshold <= 0:
+        raise ValueError(f"threshold must be positive, got {threshold}")
     keys = {(bar.symbol, bar.interval) for bar in bars}
     if len(keys) > 1:
         raise ValueError(f"bars must belong to one symbol/interval, got {sorted(keys)}")
-    return sorted(bars, key=lambda bar: bar.ts)
+    if any(bar.close <= 0 for bar in bars):
+        raise ValueError("close prices must be positive to take log returns")
+    ordered = sorted(bars, key=lambda bar: bar.ts)
+    if any(a.ts == b.ts for a, b in pairwise(ordered)):
+        raise ValueError("bars must have distinct timestamps")
+    return ordered
 
 
 def _log_returns(bars: Sequence[PriceBar]) -> list[float]:
@@ -73,7 +80,7 @@ def detect_series(bars: Sequence[PriceBar], *, window: int, threshold: float) ->
     """Run the detector over a bar history (any order) and return every bar
     whose |z| >= ``threshold``, oldest first. Used by the cold-start backfill
     so a demo anomaly exists before the first live tick."""
-    ordered = _validate(bars, window)
+    ordered = _validate(bars, window, threshold)
     returns = _log_returns(ordered)
     anomalies: list[Anomaly] = []
     for at in range(window, len(returns)):
@@ -88,7 +95,7 @@ def detect_latest(bars: Sequence[PriceBar], *, window: int, threshold: float) ->
     """Score only the newest bar — the per-tick check the scheduler job runs.
     ``None`` means no signal: too few bars for a full baseline, a flat baseline
     (sigma~0), or |z| below ``threshold``."""
-    ordered = _validate(bars, window)
+    ordered = _validate(bars, window, threshold)
     returns = _log_returns(ordered)
     if not returns:
         return None

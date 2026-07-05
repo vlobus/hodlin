@@ -78,10 +78,11 @@ async def backfill_assets(
             continue
         bar_repo = PriceBarRepository(session)
         bars_inserted = await bar_repo.upsert_many(bars)
-        # Detect over what's stored (not just this fetch) so pre-existing bars
-        # extend the baseline. +1: n days of daily bars can span n+1 candles.
+        # Detect over everything just fetched plus enough older stored history
+        # to give the earliest fetched bar a full baseline. Sized off the fetch
+        # itself, so it holds for any interval, not just daily bars.
         stored = await bar_repo.recent(
-            config.symbol, config.interval, limit=config.backfill_days + 1
+            config.symbol, config.interval, limit=len(bars) + config.window + 1
         )
         anomalies = detect_series(stored, window=config.window, threshold=config.threshold)
         anomalies_inserted = await AnomalyRepository(session).upsert_many(anomalies)
