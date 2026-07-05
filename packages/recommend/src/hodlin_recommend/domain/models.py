@@ -55,3 +55,17 @@ class NewsItem(_DomainModel):
     published_at: AwareDatetime
     url: str | None = None
     summary: str | None = None
+
+
+class Anomaly(_DomainModel):
+    """A bar the z-score detector flagged (D6). ``z_score``/``return_pct`` are
+    statistics, not money, but stay ``Decimal`` so they round-trip the store's
+    ``Numeric`` columns without float drift."""
+
+    symbol: str
+    interval: str
+    bar_ts: AwareDatetime
+    z_score: Decimal
+    return_pct: Decimal
+    direction: str  # "up" | "down"
+    window: int

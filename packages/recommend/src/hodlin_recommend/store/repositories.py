@@ -14,7 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from hodlin_recommend.domain.models import Asset, NewsItem, PriceBar
+from hodlin_recommend.domain.models import Anomaly, Asset, NewsItem, PriceBar
 from hodlin_recommend.store import tables
 
 
@@ -154,6 +154,61 @@ class NewsRepository:
         )
         inserted = (await self._session.scalars(stmt)).all()
         return len(inserted)
+
+
+class AnomalyRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def upsert_many(self, anomalies: Sequence[Anomaly]) -> int:
+        """Insert detections, skipping any bar that already tripped — the
+        ``(asset_id, interval, bar_ts)`` key means re-running detection over
+        the same history never duplicates an anomaly. Returns rows inserted."""
+        if not anomalies:
+            return 0
+        ids = await _resolve_asset_ids(self._session, {a.symbol for a in anomalies})
+        rows = [
+            {
+                "asset_id": ids[anomaly.symbol],
+                "interval": anomaly.interval,
+                "bar_ts": anomaly.bar_ts,
+                "z_score": anomaly.z_score,
+                "return_pct": anomaly.return_pct,
+                "direction": anomaly.direction,
+                "window": anomaly.window,
+            }
+            for anomaly in anomalies
+        ]
+        stmt = (
+            insert(tables.Anomaly)
+            .values(rows)
+            .on_conflict_do_nothing(constraint="uq_anomalies_natural")
+            .returning(tables.Anomaly.id)
+        )
+        inserted = (await self._session.scalars(stmt)).all()
+        return len(inserted)
+
+    async def for_symbol(self, symbol: str, interval: str) -> list[Anomaly]:
+        """All detections for a symbol/interval, oldest first."""
+        stmt = (
+            select(tables.Anomaly)
+            .join(tables.Asset, tables.Anomaly.asset_id == tables.Asset.id)
+            .where(tables.Asset.symbol == symbol, tables.Anomaly.interval == interval)
+            .order_by(tables.Anomaly.bar_ts)
+        )
+        rows = (await self._session.scalars(stmt)).all()
+        return [
+            Anomaly(
+                symbol=symbol,
+                interval=row.interval,
+                bar_ts=row.bar_ts,
+                z_score=row.z_score,
+                return_pct=row.return_pct,
+                direction=row.direction,
+                window=row.window,
+            )
+            for row in rows
+        ]
 
 
 class IngestRunRepository:
