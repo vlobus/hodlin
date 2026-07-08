@@ -157,14 +157,20 @@ class NewsRepository:
         return len(inserted)
 
     async def recent_for_symbol(
-        self, symbol: str, *, since: datetime, limit: int
+        self, symbol: str, *, since: datetime, until: datetime, limit: int
     ) -> list[NewsItem]:
-        """The newest ``limit`` items for a symbol published at/after ``since``
-        — the "top news" an explanation considers. Served by ix_news_items_asset."""
+        """The newest ``limit`` items for a symbol published in [since, until)
+        — the "top news" an explanation considers. The upper bound matters when
+        explaining historical anomalies: without it, articles *reporting* the
+        move would be offered as its cause. Served by ix_news_items_asset."""
         stmt = (
             select(tables.NewsItem)
             .join(tables.Asset, tables.NewsItem.asset_id == tables.Asset.id)
-            .where(tables.Asset.symbol == symbol, tables.NewsItem.published_at >= since)
+            .where(
+                tables.Asset.symbol == symbol,
+                tables.NewsItem.published_at >= since,
+                tables.NewsItem.published_at < until,
+            )
             .order_by(tables.NewsItem.published_at.desc())
             .limit(limit)
         )

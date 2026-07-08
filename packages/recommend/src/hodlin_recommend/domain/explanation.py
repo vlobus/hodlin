@@ -17,12 +17,12 @@ import json
 from typing import Protocol, runtime_checkable
 
 from hodlin_contracts import EvidenceRef
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from hodlin_recommend.domain.models import Anomaly, NewsItem
 from hodlin_recommend.domain.sentiment import SentimentScore
 
-# Tuning, not secrets (D17): prose length cap and how much news to consider.
+# Tuning, not secrets (D17): prose length cap for the reply.
 MAX_REPLY_TOKENS = 1024
 
 _SYSTEM_PROMPT = """\
@@ -80,6 +80,12 @@ class ExplanationDraft(BaseModel):
 
     reasoning: str = Field(min_length=1)
     evidence_indices: tuple[int, ...]
+
+    @field_validator("evidence_indices")
+    @classmethod
+    def _dedupe(cls, indices: tuple[int, ...]) -> tuple[int, ...]:
+        """A candidate cited twice is one piece of evidence, not two."""
+        return tuple(dict.fromkeys(indices))
 
 
 def anomaly_ref(anomaly: Anomaly) -> EvidenceRef:
@@ -188,7 +194,6 @@ def assemble_explanation(
     anomaly: Anomaly,
     candidates: list[ScoredNews],
     draft: ExplanationDraft,
-    model_version: str,
 ) -> tuple[str, list[EvidenceRef]]:
     """Deterministically expand the LLM's index selections into EvidenceRefs.
     The anomaly's own ref is always first; only *selected* news is cited."""

@@ -120,6 +120,11 @@ def test_parse_reply_allows_empty_selection() -> None:
     assert draft.evidence_indices == ()
 
 
+def test_parse_reply_dedupes_repeated_indices() -> None:
+    draft = parse_reply('{"reasoning": "why", "evidence_indices": [1, 0, 1]}', 2)
+    assert draft.evidence_indices == (1, 0)  # order kept, duplicate dropped
+
+
 # Evidence expansion ---------------------------------------------------------
 
 
@@ -143,7 +148,7 @@ def test_assemble_only_cites_selected_candidates() -> None:
     candidates = [_candidate("cited"), _candidate("ignored")]
     draft = parse_reply('{"reasoning": "why", "evidence_indices": [0]}', 2)
 
-    reasoning, evidence = assemble_explanation(_ANOMALY, candidates, draft, "mock:1")
+    reasoning, evidence = assemble_explanation(_ANOMALY, candidates, draft)
 
     assert reasoning == "why"
     assert evidence[0].kind == "anomaly"  # always present -> >= 1 evidence

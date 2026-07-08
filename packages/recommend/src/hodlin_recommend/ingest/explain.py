@@ -1,7 +1,8 @@
 """Explain one anomaly: gather context, one LLM call, store the result.
 
 Orchestration only — the judgement lives in ``domain/explanation.py``. Flow:
-recent news for the asset (window before the anomalous bar) -> sentiment score
+recent news for the asset (window ending at the anomalous bar's close, so
+later news can't "explain" an earlier move) -> sentiment score
 per headline -> numbered candidates -> single LLM call -> validate -> expand
 index selections into EvidenceRefs -> persist. Idempotent: an anomaly that
 already has an explanation is skipped before any model or LLM work is spent.
@@ -30,6 +31,7 @@ from hodlin_recommend.store.repositories import ExplanationRepository, NewsRepos
 
 # Tuning, not secrets (D17): how much context one explanation considers.
 NEWS_WINDOW = timedelta(days=3)
+BAR_SPAN = timedelta(days=1)  # "1d" bars — news during the anomalous bar still counts
 MAX_NEWS = 8
 
 
@@ -50,7 +52,10 @@ async def explain_anomaly(
         return None
 
     news = await NewsRepository(session).recent_for_symbol(
-        anomaly.symbol, since=anomaly.bar_ts - NEWS_WINDOW, limit=MAX_NEWS
+        anomaly.symbol,
+        since=anomaly.bar_ts - NEWS_WINDOW,
+        until=anomaly.bar_ts + BAR_SPAN,
+        limit=MAX_NEWS,
     )
     candidates = [
         ScoredNews(
@@ -63,7 +68,7 @@ async def explain_anomaly(
     system, user = build_prompt(anomaly, candidates)
     reply = await llm.complete(system=system, user=user)
     draft = parse_reply(reply, candidate_count=len(candidates))
-    reasoning, evidence = assemble_explanation(anomaly, candidates, draft, llm.model_version)
+    reasoning, evidence = assemble_explanation(anomaly, candidates, draft)
 
     explanation = Explanation(
         symbol=anomaly.symbol,

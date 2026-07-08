@@ -75,6 +75,16 @@ async def _seed(session: AsyncSession) -> None:
                 headline="Unrelated: new logo announced",
                 published_at=datetime(2024, 6, 22, 9, 0, tzinfo=UTC),
             ),
+            # Published after the anomalous bar closed — reports the move, so
+            # it must never be offered as its cause (look-ahead guard).
+            NewsItem(
+                symbol="BTC-USD",
+                source="finnhub",
+                external_id="n-3",
+                headline="Bitcoin plunged 4.5% yesterday after exchange hack",
+                url="https://example.test/after-the-fact",
+                published_at=datetime(2024, 6, 25, 8, 0, tzinfo=UTC),
+            ),
         ]
     )
     await session.commit()
@@ -97,6 +107,8 @@ async def test_mocked_llm_yields_stored_linked_explanation(session: AsyncSession
     assert len(stored.evidence) >= 1
     kinds = [ref.kind for ref in stored.evidence]
     assert kinds == ["anomaly", "news", "sentiment"]  # cited [0] only, not n-2
+    # [0] is the hack, not n-3: news after the bar closed never becomes a
+    # candidate, so it can't be cited as the cause of an earlier move.
     assert stored.evidence[1].ref == "https://example.test/hack"
 
 
