@@ -29,3 +29,7 @@ class Settings(BaseSettings):
     massive_api_key: str
     massive_base_url: str
     massive_rate_per_min: float
+
+    # Anthropic — the single explanation call per anomaly (T7).
+    anthropic_api_key: str
+    anthropic_model: str

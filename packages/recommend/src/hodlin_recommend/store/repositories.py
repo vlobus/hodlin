@@ -10,11 +10,12 @@ transaction (commit/rollback) so multiple repository calls compose atomically.
 from collections.abc import Sequence
 from datetime import UTC, datetime
 
+from hodlin_contracts import EvidenceRef
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from hodlin_recommend.domain.models import Anomaly, Asset, NewsItem, PriceBar
+from hodlin_recommend.domain.models import Anomaly, Asset, Explanation, NewsItem, PriceBar
 from hodlin_recommend.store import tables
 
 
@@ -155,6 +156,38 @@ class NewsRepository:
         inserted = (await self._session.scalars(stmt)).all()
         return len(inserted)
 
+    async def recent_for_symbol(
+        self, symbol: str, *, since: datetime, until: datetime, limit: int
+    ) -> list[NewsItem]:
+        """The newest ``limit`` items for a symbol published in [since, until)
+        — the "top news" an explanation considers. The upper bound matters when
+        explaining historical anomalies: without it, articles *reporting* the
+        move would be offered as its cause. Served by ix_news_items_asset."""
+        stmt = (
+            select(tables.NewsItem)
+            .join(tables.Asset, tables.NewsItem.asset_id == tables.Asset.id)
+            .where(
+                tables.Asset.symbol == symbol,
+                tables.NewsItem.published_at >= since,
+                tables.NewsItem.published_at < until,
+            )
+            .order_by(tables.NewsItem.published_at.desc())
+            .limit(limit)
+        )
+        rows = (await self._session.scalars(stmt)).all()
+        return [
+            NewsItem(
+                symbol=symbol,
+                source=row.source,
+                external_id=row.external_id,
+                headline=row.headline,
+                url=row.url,
+                summary=row.summary,
+                published_at=row.published_at,
+            )
+            for row in rows
+        ]
+
 
 class AnomalyRepository:
     def __init__(self, session: AsyncSession) -> None:
@@ -209,6 +242,71 @@ class AnomalyRepository:
             )
             for row in rows
         ]
+
+
+class UnknownAnomaly(Exception):
+    """Raised when an explanation references an anomaly with no stored row.
+    Explanations are always minted *for* a detected anomaly, never freestanding."""
+
+    def __init__(self, symbol: str, interval: str, bar_ts: datetime) -> None:
+        super().__init__(f"no anomaly row for {symbol!r} {interval} @ {bar_ts.isoformat()}")
+
+
+class ExplanationRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def _anomaly_id(self, symbol: str, interval: str, bar_ts: datetime) -> int:
+        stmt = (
+            select(tables.Anomaly.id)
+            .join(tables.Asset, tables.Anomaly.asset_id == tables.Asset.id)
+            .where(
+                tables.Asset.symbol == symbol,
+                tables.Anomaly.interval == interval,
+                tables.Anomaly.bar_ts == bar_ts,
+            )
+        )
+        anomaly_id: int | None = await self._session.scalar(stmt)
+        if anomaly_id is None:
+            raise UnknownAnomaly(symbol, interval, bar_ts)
+        return anomaly_id
+
+    async def upsert(self, explanation: Explanation) -> bool:
+        """Insert unless the anomaly is already explained (one explanation per
+        anomaly, ``uq_explanations_anomaly``). Returns whether a row was
+        inserted — re-explaining is a no-op, not an overwrite."""
+        anomaly_id = await self._anomaly_id(
+            explanation.symbol, explanation.interval, explanation.bar_ts
+        )
+        stmt = (
+            insert(tables.Explanation)
+            .values(
+                anomaly_id=anomaly_id,
+                reasoning=explanation.reasoning,
+                # JSON-mode dump: datetimes become ISO strings, JSONB-safe.
+                evidence=[ref.model_dump(mode="json") for ref in explanation.evidence],
+                model_version=explanation.model_version,
+            )
+            .on_conflict_do_nothing(constraint="uq_explanations_anomaly")
+            .returning(tables.Explanation.id)
+        )
+        inserted = (await self._session.scalars(stmt)).all()
+        return len(inserted) == 1
+
+    async def for_anomaly(self, symbol: str, interval: str, bar_ts: datetime) -> Explanation | None:
+        anomaly_id = await self._anomaly_id(symbol, interval, bar_ts)
+        stmt = select(tables.Explanation).where(tables.Explanation.anomaly_id == anomaly_id)
+        row = await self._session.scalar(stmt)
+        if row is None:
+            return None
+        return Explanation(
+            symbol=symbol,
+            interval=interval,
+            bar_ts=bar_ts,
+            reasoning=row.reasoning,
+            evidence=tuple(EvidenceRef.model_validate(ref) for ref in row.evidence),
+            model_version=row.model_version,
+        )
 
 
 class IngestRunRepository:
