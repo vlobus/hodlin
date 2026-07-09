@@ -64,5 +64,5 @@ asyncio_mode = "auto"
 
 # Third-party packages without type stubs.
 [[tool.mypy.overrides]]
-module = ["testcontainers.*", "alembic.*"]
+module = ["testcontainers.*", "alembic.*", "apscheduler.*"]
 ignore_missing_imports = true
