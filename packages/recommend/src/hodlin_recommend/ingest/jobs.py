@@ -17,7 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from hodlin_recommend.connectors.base import NewsSource, PriceBarSource, SourceUnavailable
 from hodlin_recommend.domain.anomaly import detect_series
@@ -27,6 +27,7 @@ from hodlin_recommend.domain.models import Asset
 from hodlin_recommend.domain.sentiment import SentimentModel
 from hodlin_recommend.ingest.backfill import backfill_assets
 from hodlin_recommend.ingest.explain import explain_anomaly
+from hodlin_recommend.store.db import SessionFactory
 from hodlin_recommend.store.repositories import (
     AnomalyRepository,
     AssetRepository,
@@ -42,8 +43,6 @@ BARS_LOOKBACK = timedelta(days=5)
 NEWS_LOOKBACK = timedelta(days=3)
 DETECT_TAIL = 8
 EXPLAIN_BATCH = 5
-
-SessionFactory = async_sessionmaker[AsyncSession]
 
 
 @dataclass(frozen=True)
@@ -65,7 +64,10 @@ async def run_audited(
     The "running" row commits before work starts, so overlap and hangs are
     observable in the table while they happen. An exception rolls back the
     work, records an error row, and is swallowed — the scheduler must outlive
-    any single tick.
+    any single tick. Two honest limits: if the *database* is down, the audit
+    write itself raises out of the job (APScheduler logs it and survives);
+    and a tick cancelled at shutdown leaves its row at "running" — a true
+    record, redone at the next startup since every job is idempotent.
     """
     async with session_factory() as session:
         runs = IngestRunRepository(session)
@@ -81,13 +83,10 @@ async def run_audited(
         return outcome
 
 
-def _ensure_assets(session: AsyncSession, assets: Sequence[AssetConfig]) -> Awaitable[None]:
-    async def ensure() -> None:
-        repo = AssetRepository(session)
-        for config in assets:
-            await repo.upsert(Asset(symbol=config.symbol, kind=config.kind, name=config.name))
-
-    return ensure()
+async def _ensure_assets(session: AsyncSession, assets: Sequence[AssetConfig]) -> None:
+    repo = AssetRepository(session)
+    for config in assets:
+        await repo.upsert(Asset(symbol=config.symbol, kind=config.kind, name=config.name))
 
 
 async def ingest_bars(

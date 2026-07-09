@@ -19,6 +19,11 @@ class Base(DeclarativeBase):
     """Declarative base for all ORM models; carries the shared ``metadata``."""
 
 
+# The type components ask for when they mint their own sessions (jobs, the
+# readiness probe) — an alias so their signatures don't spell out generics.
+SessionFactory = async_sessionmaker[AsyncSession]
+
+
 def create_engine(database_url: str, *, echo: bool = False) -> AsyncEngine:
     """Build the async engine (a pooled connection to Postgres). ``pool_pre_ping``
     quietly recycles connections the DB dropped, so a restarted Postgres doesn't

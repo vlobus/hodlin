@@ -17,11 +17,10 @@ from hodlin_recommend.domain.explanation import LLMUnavailable
 from hodlin_recommend.domain.models import Anomaly, Asset, NewsItem, PriceBar
 from hodlin_recommend.domain.sentiment import SentimentScore, to_score
 from hodlin_recommend.ingest import jobs
-from hodlin_recommend.ingest.jobs import SessionFactory
 from hodlin_recommend.ingest.scheduler import build_scheduler
 from hodlin_recommend.serving.app import create_app
 from hodlin_recommend.store import tables
-from hodlin_recommend.store.db import create_session_factory
+from hodlin_recommend.store.db import SessionFactory, create_session_factory
 from hodlin_recommend.store.repositories import (
     AnomalyRepository,
     AssetRepository,

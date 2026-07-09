@@ -257,7 +257,8 @@ class AnomalyRepository:
                 isouter=True,
             )
             .where(tables.Explanation.id.is_(None))
-            .order_by(tables.Anomaly.bar_ts.desc())
+            # id breaks ties when assets share a bar_ts — deterministic batches.
+            .order_by(tables.Anomaly.bar_ts.desc(), tables.Anomaly.id.desc())
             .limit(limit)
         )
         rows = (await self._session.execute(stmt)).all()

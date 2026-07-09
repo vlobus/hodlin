@@ -26,7 +26,7 @@ from hodlin_recommend.domain.asset_config import DEFAULT_ASSETS, AssetConfig
 from hodlin_recommend.domain.explanation import ExplainerLLM
 from hodlin_recommend.domain.sentiment import SentimentModel
 from hodlin_recommend.ingest import jobs
-from hodlin_recommend.ingest.jobs import SessionFactory
+from hodlin_recommend.store.db import SessionFactory
 
 # Tuning, not secrets (D17).
 BARS_EVERY_S = 900
@@ -92,9 +92,13 @@ def build_scheduler(
         id="explain_anomalies",
     )
     if backfill_on_start:
-        # No trigger = a date trigger of "now": runs once when the scheduler starts.
+        # No trigger = a date trigger of "now" — stamped at *build* time, so
+        # the grace must be unlimited: if startup takes longer than the
+        # default 60s (model download, slow bind), the cold start must still
+        # run late rather than be silently dropped as a misfire.
         scheduler.add_job(
             partial(jobs.run_backfill, session_factory, bar_source, assets),
             id="backfill",
+            misfire_grace_time=None,
         )
     return scheduler

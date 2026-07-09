@@ -7,8 +7,9 @@ Anthropic explainer, the single-lane inference executor, and the scheduler
 that ties the jobs to all of it. The app factory and jobs see only interfaces.
 
 Cleanup that isn't owned by a component goes on the exit stack: the lifespan
-closes it last, after the scheduler has stopped ticking, so no job loses its
-engine or HTTP client mid-run. Run with ``python -m hodlin_recommend.main``.
+closes it last, after the scheduler has stopped taking new ticks and any
+cancelled in-flight tick has had its grace to unwind (see ``serving/app.py``
+for the honest shutdown semantics). Run with ``python -m hodlin_recommend.main``.
 """
 
 from concurrent.futures import ThreadPoolExecutor
