@@ -10,6 +10,7 @@ in ``tests/integration/test_notify.py``.
 
 import asyncio
 import json
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
@@ -130,12 +131,19 @@ async def test_ok_false_is_a_failure_even_on_http_200(rate: RateLimiter) -> None
     assert excinfo.value.source == "telegram"
 
 
-async def test_5xx_retries_then_raises_unavailable(rate: RateLimiter) -> None:
+async def test_5xx_retries_then_raises_unavailable_with_token_redacted(
+    rate: RateLimiter,
+) -> None:
     async with httpx.AsyncClient() as http, respx.mock:
         route = respx.post(_SEND_URL).mock(return_value=httpx.Response(502))
-        with pytest.raises(SourceUnavailable):
+        with pytest.raises(SourceUnavailable) as excinfo:
             await _client(http, rate).send(42, "hi")
     assert route.call_count == _FAST.attempts
+    # httpx quotes the full URL (token in the path) in its error text, and
+    # SourceUnavailable text gets persisted to ingest_runs.detail — so the
+    # secret must be scrubbed at the wrap.
+    assert "TOKEN" not in str(excinfo.value)
+    assert "***" in str(excinfo.value)
 
 
 async def test_get_updates_unwraps_result(rate: RateLimiter) -> None:
@@ -152,10 +160,11 @@ async def test_get_updates_unwraps_result(rate: RateLimiter) -> None:
     assert payload["timeout"] > 0  # long poll, not a busy loop
 
 
-def test_client_satisfies_both_protocol_halves(rate: RateLimiter) -> None:
-    client = TelegramClient(httpx.AsyncClient(), token="T", base_url=_BASE, rate=rate)
-    assert isinstance(client, Messenger)
-    assert isinstance(client, UpdateSource)
+async def test_client_satisfies_both_protocol_halves(rate: RateLimiter) -> None:
+    async with httpx.AsyncClient() as http:
+        client = TelegramClient(http, token="T", base_url=_BASE, rate=rate)
+        assert isinstance(client, Messenger)
+        assert isinstance(client, UpdateSource)
 
 
 # The poller: single-ID allowlist --------------------------------------------
@@ -176,11 +185,11 @@ def _update(update_id: int, sender: int, chat: int | None = None) -> dict[str, A
 
 
 class ScriptedAPI:
-    """Serves one scripted batch of updates, then long-polls forever (until
+    """Serves scripted batches of updates, then long-polls forever (until
     the test cancels the poller) — deterministic, no timing guesses."""
 
-    def __init__(self, updates: list[dict[str, Any]]) -> None:
-        self.batches = [updates]
+    def __init__(self, *batches: list[dict[str, Any]]) -> None:
+        self.batches = list(batches)
         self.sent: list[tuple[int, str]] = []
         self.offsets: list[int | None] = []
         self.drained = asyncio.Event()
@@ -197,11 +206,13 @@ class ScriptedAPI:
         self.sent.append((chat_id, text))
 
 
-async def _run_until_drained(api: ScriptedAPI) -> None:
-    async def reply_text() -> str:
+async def _run_until_drained(
+    api: ScriptedAPI, reply_text: Callable[[], Awaitable[str]] | None = None
+) -> None:
+    async def default_reply() -> str:
         return "latest anomaly summary"
 
-    poller = UpdatePoller(api, allowed_chat_id=_ALLOWED, reply_text=reply_text)
+    poller = UpdatePoller(api, allowed_chat_id=_ALLOWED, reply_text=reply_text or default_reply)
     task = asyncio.create_task(poller.run())
     try:
         await asyncio.wait_for(api.drained.wait(), timeout=5)
@@ -228,3 +239,23 @@ async def test_stranger_in_allowed_chat_is_still_rejected() -> None:
     await _run_until_drained(api)
 
     assert api.sent == []
+
+
+async def test_a_crashing_reply_does_not_kill_the_loop() -> None:
+    """A DB blip while building one reply must not silently kill the poller:
+    the poisoned update is acknowledged and skipped, and the next message
+    gets its answer."""
+    api = ScriptedAPI([_update(1, _ALLOWED)], [_update(2, _ALLOWED)])
+    calls = 0
+
+    async def flaky_reply() -> str:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("db blip")
+        return "recovered"
+
+    await _run_until_drained(api, flaky_reply)
+
+    assert api.sent == [(_ALLOWED, "recovered")]  # second message answered
+    assert api.offsets == [None, 2, 3]  # the crashing update was still acked

@@ -61,7 +61,10 @@ class TelegramClient:
         retry: RetryPolicy = DEFAULT_RETRY,
     ) -> None:
         self._client = client
-        # Telegram puts the secret in the path; it must never be logged.
+        # Telegram puts the secret in the URL *path*, and httpx error text
+        # quotes the URL — so the token rides every wrapped error unless
+        # request_json redacts it (its text lands in ingest_runs.detail).
+        self._token = token
         self._base = f"{base_url.rstrip('/')}/bot{token}"
         self._rate = rate
         self._retry = retry
@@ -82,6 +85,7 @@ class TelegramClient:
             http_timeout=http_timeout,
             rate=self._rate,
             retry=self._retry,
+            secrets=(self._token,),
         )
         # Telegram can answer HTTP 200 with ok=false; that's still a failure.
         if not isinstance(data, dict) or not data.get("ok"):

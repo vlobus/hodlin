@@ -121,6 +121,7 @@ async def request_json(
     http_timeout: httpx.Timeout | None = None,
     rate: RateLimiter | None = None,
     retry: RetryPolicy = DEFAULT_RETRY,
+    secrets: tuple[str, ...] = (),
 ) -> Any:
     """Call ``url`` and return parsed JSON, applying the shared rate-limit +
     retry policy and wrapping any HTTP failure as ``SourceUnavailable``.
@@ -130,6 +131,11 @@ async def request_json(
     must outlive it). Note retries make non-idempotent POSTs at-least-once:
     a reply lost on the wire is retried even if the server acted — callers
     choose semantics.
+
+    ``secrets`` are redacted from the wrapped error message: httpx errors
+    quote the full URL, which carries API keys (query params) or the bot
+    token (path) — and ``SourceUnavailable`` text ends up *persisted* in
+    ``ingest_runs.detail``, so the secret must be scrubbed at the wrap.
     """
     request_timeout = http_timeout if http_timeout is not None else httpx.USE_CLIENT_DEFAULT
 
@@ -158,6 +164,13 @@ async def request_json(
             with attempt:
                 return await _once()
     except (httpx.HTTPError, json.JSONDecodeError) as exc:
-        raise SourceUnavailable(source, exc) from exc
+        raise SourceUnavailable(source, _redact(str(exc), secrets)) from exc
     # Unreachable: the loop either returns or reraises, but satisfies the type.
     raise SourceUnavailable(source, "retries exhausted")
+
+
+def _redact(text: str, secrets: tuple[str, ...]) -> str:
+    for secret in secrets:
+        if secret:
+            text = text.replace(secret, "***")
+    return text

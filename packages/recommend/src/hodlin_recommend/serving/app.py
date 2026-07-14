@@ -88,8 +88,10 @@ def create_app(
             if poll_task is not None:
                 # Cancellation is the poller's stop signal; await the unwind
                 # so no inbound handler is mid-flight when resources close.
+                # Suppress Exception too: a task that somehow crashed earlier
+                # re-raises here, and it must not abort the rest of teardown.
                 poll_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
+                with contextlib.suppress(asyncio.CancelledError, Exception):
                     await poll_task
             if scheduler is not None:
                 # AsyncIOScheduler defers the actual stop to a loop callback
