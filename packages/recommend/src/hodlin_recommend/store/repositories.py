@@ -11,7 +11,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 
 from hodlin_contracts import EvidenceRef
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -189,6 +189,31 @@ class NewsRepository:
         ]
 
 
+def _anomaly_with_explanation(
+    row: tables.Anomaly, explanation_row: tables.Explanation, symbol: str
+) -> tuple[Anomaly, Explanation]:
+    """Map one joined (anomaly, explanation) row pair to domain models —
+    shared by the delivery-queue and latest-explained reads."""
+    anomaly = Anomaly(
+        symbol=symbol,
+        interval=row.interval,
+        bar_ts=row.bar_ts,
+        z_score=row.z_score,
+        return_pct=row.return_pct,
+        direction=row.direction,
+        window=row.window,
+    )
+    explanation = Explanation(
+        symbol=symbol,
+        interval=row.interval,
+        bar_ts=row.bar_ts,
+        reasoning=explanation_row.reasoning,
+        evidence=tuple(EvidenceRef.model_validate(ref) for ref in explanation_row.evidence),
+        model_version=explanation_row.model_version,
+    )
+    return anomaly, explanation
+
+
 class AnomalyRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
@@ -242,6 +267,58 @@ class AnomalyRepository:
             )
             for row in rows
         ]
+
+    async def explained_unnotified(self, *, limit: int) -> list[tuple[Anomaly, Explanation]]:
+        """The delivery queue: anomalies that have their "why" but haven't been
+        sent yet, oldest first so alerts arrive in chronological order."""
+        stmt = (
+            select(tables.Anomaly, tables.Explanation, tables.Asset.symbol)
+            .join(tables.Asset, tables.Anomaly.asset_id == tables.Asset.id)
+            .join(tables.Explanation, tables.Explanation.anomaly_id == tables.Anomaly.id)
+            .where(tables.Anomaly.notified_at.is_(None))
+            .order_by(tables.Anomaly.bar_ts, tables.Anomaly.id)
+            .limit(limit)
+        )
+        rows = (await self._session.execute(stmt)).all()
+        return [
+            _anomaly_with_explanation(row, explanation, symbol) for row, explanation, symbol in rows
+        ]
+
+    async def latest_explained(self) -> tuple[Anomaly, Explanation] | None:
+        """The newest anomaly that has an explanation — the poller's reply to
+        an allowlisted 'what's up?', notified or not."""
+        stmt = (
+            select(tables.Anomaly, tables.Explanation, tables.Asset.symbol)
+            .join(tables.Asset, tables.Anomaly.asset_id == tables.Asset.id)
+            .join(tables.Explanation, tables.Explanation.anomaly_id == tables.Anomaly.id)
+            .order_by(tables.Anomaly.bar_ts.desc(), tables.Anomaly.id.desc())
+            .limit(1)
+        )
+        first = (await self._session.execute(stmt)).first()
+        if first is None:
+            return None
+        row, explanation, symbol = first
+        return _anomaly_with_explanation(row, explanation, symbol)
+
+    async def mark_notified(self, symbol: str, interval: str, bar_ts: datetime) -> bool:
+        """Atomically claim one anomaly for delivery: flip ``notified_at`` only
+        if it is still NULL. Returns whether *this* caller won the claim — the
+        compare-and-set that makes "each anomaly notifies once" hold even
+        across overlapping processes, not just ticks."""
+        asset_id = select(tables.Asset.id).where(tables.Asset.symbol == symbol).scalar_subquery()
+        stmt = (
+            update(tables.Anomaly)
+            .where(
+                tables.Anomaly.asset_id == asset_id,
+                tables.Anomaly.interval == interval,
+                tables.Anomaly.bar_ts == bar_ts,
+                tables.Anomaly.notified_at.is_(None),
+            )
+            .values(notified_at=datetime.now(UTC))
+            .returning(tables.Anomaly.id)
+        )
+        claimed = (await self._session.scalars(stmt)).all()
+        return len(claimed) == 1
 
     async def unexplained(self, *, limit: int) -> list[Anomaly]:
         """The newest ``limit`` anomalies with no explanation yet — the explain

@@ -33,3 +33,10 @@ class Settings(BaseSettings):
     # Anthropic — the single explanation call per anomaly (T7).
     anthropic_api_key: str
     anthropic_model: str
+
+    # Telegram — delivery (T9). ``chat_id`` is both the destination and the
+    # single-ID allowlist: inbound messages from anyone else are dropped.
+    telegram_bot_token: str
+    telegram_base_url: str
+    telegram_chat_id: int
+    telegram_rate_per_min: float

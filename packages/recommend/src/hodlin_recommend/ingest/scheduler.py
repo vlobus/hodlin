@@ -1,4 +1,4 @@
-"""Scheduler wiring (T8, D5): four recurring jobs on an ``AsyncIOScheduler``.
+"""Scheduler wiring (T8/T9, D5): five recurring jobs on an ``AsyncIOScheduler``.
 
 APScheduler's asyncio scheduler runs coroutine jobs as tasks on the app's own
 event loop — no extra threads or processes, and the jobs share the process's
@@ -9,7 +9,9 @@ missed ticks into one run, and ``misfire_grace_time`` bounds how stale a
 missed tick may be and still fire.
 
 Intervals are tuning, not secrets (D17): daily bars don't need minute-level
-polling; the explain tick is shorter so a fresh anomaly gets its "why" fast.
+polling; the explain tick is shorter so a fresh anomaly gets its "why" fast,
+and the notify tick shorter still so the explained anomaly reaches Telegram
+within a minute.
 The builder only assembles — construction of the concretes stays in the
 composition root (``main.py``), and tests hand in fakes.
 """
@@ -22,6 +24,7 @@ from functools import partial
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from hodlin_recommend.connectors.base import NewsSource, PriceBarSource
+from hodlin_recommend.delivery.telegram import Messenger
 from hodlin_recommend.domain.asset_config import DEFAULT_ASSETS, AssetConfig
 from hodlin_recommend.domain.explanation import ExplainerLLM
 from hodlin_recommend.domain.sentiment import SentimentModel
@@ -33,6 +36,7 @@ BARS_EVERY_S = 900
 NEWS_EVERY_S = 900
 DETECT_EVERY_S = 900
 EXPLAIN_EVERY_S = 300
+NOTIFY_EVERY_S = 60
 MISFIRE_GRACE_S = 60
 
 JOB_DEFAULTS = {
@@ -49,6 +53,8 @@ def build_scheduler(
     news_source: NewsSource,
     llm: ExplainerLLM,
     sentiment_model: SentimentModel,
+    messenger: Messenger,
+    chat_id: int,
     inference_executor: ThreadPoolExecutor | None = None,
     assets: Sequence[AssetConfig] = DEFAULT_ASSETS,
     backfill_on_start: bool = True,
@@ -90,6 +96,12 @@ def build_scheduler(
         "interval",
         seconds=EXPLAIN_EVERY_S,
         id="explain_anomalies",
+    )
+    scheduler.add_job(
+        partial(jobs.notify_anomalies, session_factory, messenger=messenger, chat_id=chat_id),
+        "interval",
+        seconds=NOTIFY_EVERY_S,
+        id="notify_anomalies",
     )
     if backfill_on_start:
         # No trigger = a date trigger of "now" — stamped at *build* time, so

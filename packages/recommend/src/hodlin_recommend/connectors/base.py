@@ -116,18 +116,33 @@ async def request_json(
     source: str,
     url: str,
     params: Mapping[str, str] | None = None,
+    method: str = "GET",
+    json_body: Any | None = None,
+    http_timeout: httpx.Timeout | None = None,
     rate: RateLimiter | None = None,
     retry: RetryPolicy = DEFAULT_RETRY,
 ) -> Any:
-    """GET ``url`` and return parsed JSON, applying the shared rate-limit + retry
-    policy and wrapping any HTTP failure as ``SourceUnavailable``."""
+    """Call ``url`` and return parsed JSON, applying the shared rate-limit +
+    retry policy and wrapping any HTTP failure as ``SourceUnavailable``.
+
+    ``method``/``json_body`` exist for POST-style APIs (Telegram);
+    ``http_timeout`` overrides the client default per request (a long poll
+    must outlive it). Note retries make non-idempotent POSTs at-least-once:
+    a reply lost on the wire is retried even if the server acted — callers
+    choose semantics.
+    """
+    request_timeout = http_timeout if http_timeout is not None else httpx.USE_CLIENT_DEFAULT
 
     async def _once() -> Any:
         if rate is not None:
             async with rate:
-                response = await client.get(url, params=params)
+                response = await client.request(
+                    method, url, params=params, json=json_body, timeout=request_timeout
+                )
         else:
-            response = await client.get(url, params=params)
+            response = await client.request(
+                method, url, params=params, json=json_body, timeout=request_timeout
+            )
         response.raise_for_status()
         # parse_float=Decimal keeps money exact: JSON numbers never become floats
         # (which the domain models reject), so precision survives from the wire.
