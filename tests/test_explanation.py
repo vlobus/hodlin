@@ -7,11 +7,15 @@ selections into EvidenceRefs the LLM can never fabricate.
 
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import ClassVar
 
 import pytest
 from hodlin_contracts import EvidenceRef
 from hodlin_recommend.domain.explanation import (
+    LLM_TIMEOUT_SECONDS,
+    AnthropicExplainer,
     ExplainerLLM,
+    LLMUnavailable,
     MalformedReply,
     ScoredNews,
     anomaly_ref,
@@ -154,3 +158,68 @@ def test_assemble_only_cites_selected_candidates() -> None:
     assert evidence[0].kind == "anomaly"  # always present -> >= 1 evidence
     assert all(isinstance(ref, EvidenceRef) for ref in evidence)
     assert len(evidence) == 3  # anomaly + news + sentiment for the one selection
+
+
+# The Anthropic adapter — stubbed client, no network, no live API ------------
+
+
+class _TextBlock:
+    type = "text"
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+
+class _ThinkingBlock:
+    type = "thinking"
+
+
+def _explainer() -> AnthropicExplainer:
+    # Constructing the adapter builds an SDK client but touches no network.
+    return AnthropicExplainer(api_key="test-key-never-used", model="claude-x")
+
+
+def test_anthropic_adapter_stamps_model_version_and_bounded_timeout() -> None:
+    explainer = _explainer()
+    assert explainer.model_version == "anthropic:claude-x"
+    # A scheduled tick can't wait out the SDK's 600s default.
+    assert explainer._client.timeout == LLM_TIMEOUT_SECONDS
+
+
+async def test_anthropic_adapter_joins_text_blocks_only() -> None:
+    class _Reply:
+        content: ClassVar = [_ThinkingBlock(), _TextBlock('{"reasoning": '), _TextBlock('"x"}')]
+
+    class _Messages:
+        async def create(self, **kwargs: object) -> _Reply:
+            return _Reply()
+
+    class _Client:
+        messages = _Messages()
+
+    explainer = _explainer()
+    explainer._client = _Client()  # type: ignore[assignment]
+
+    text = await explainer.complete(system="s", user="u")
+    assert text == '{"reasoning": "x"}'
+
+
+async def test_anthropic_transport_failure_maps_to_llm_unavailable() -> None:
+    import anthropic
+    import httpx as _httpx
+
+    error = anthropic.APIConnectionError(request=_httpx.Request("POST", "http://test"))
+
+    class _Messages:
+        async def create(self, **kwargs: object) -> object:
+            raise error
+
+    class _Client:
+        messages = _Messages()
+
+    explainer = _explainer()
+    explainer._client = _Client()  # type: ignore[assignment]
+
+    with pytest.raises(LLMUnavailable) as excinfo:
+        await explainer.complete(system="s", user="u")
+    assert excinfo.value.cause is error

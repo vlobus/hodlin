@@ -243,6 +243,38 @@ class AnomalyRepository:
             for row in rows
         ]
 
+    async def unexplained(self, *, limit: int) -> list[Anomaly]:
+        """The newest ``limit`` anomalies with no explanation yet — the explain
+        job's work queue. Newest first because fresh moves are what delivery
+        (T9) cares about; the backlog still drains across ticks as each batch
+        gets explained and drops out of this query."""
+        stmt = (
+            select(tables.Anomaly, tables.Asset.symbol)
+            .join(tables.Asset, tables.Anomaly.asset_id == tables.Asset.id)
+            .join(
+                tables.Explanation,
+                tables.Explanation.anomaly_id == tables.Anomaly.id,
+                isouter=True,
+            )
+            .where(tables.Explanation.id.is_(None))
+            # id breaks ties when assets share a bar_ts — deterministic batches.
+            .order_by(tables.Anomaly.bar_ts.desc(), tables.Anomaly.id.desc())
+            .limit(limit)
+        )
+        rows = (await self._session.execute(stmt)).all()
+        return [
+            Anomaly(
+                symbol=symbol,
+                interval=row.interval,
+                bar_ts=row.bar_ts,
+                z_score=row.z_score,
+                return_pct=row.return_pct,
+                direction=row.direction,
+                window=row.window,
+            )
+            for row, symbol in rows
+        ]
+
 
 class UnknownAnomaly(Exception):
     """Raised when an explanation references an anomaly with no stored row.

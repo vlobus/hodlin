@@ -22,8 +22,11 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from hodlin_recommend.domain.models import Anomaly, NewsItem
 from hodlin_recommend.domain.sentiment import SentimentScore
 
-# Tuning, not secrets (D17): prose length cap for the reply.
+# Tuning, not secrets (D17): prose length cap for the reply, and how long one
+# call may take. The SDK default timeout is 600s — fine for a human chat, far
+# too patient for a scheduled job whose whole interval is shorter than that.
 MAX_REPLY_TOKENS = 1024
+LLM_TIMEOUT_SECONDS = 60.0
 
 _SYSTEM_PROMPT = """\
 You explain detected market price anomalies for a single human reader.
@@ -173,7 +176,7 @@ class AnthropicExplainer:
         import anthropic
 
         self._anthropic = anthropic
-        self._client = anthropic.AsyncAnthropic(api_key=api_key)
+        self._client = anthropic.AsyncAnthropic(api_key=api_key, timeout=LLM_TIMEOUT_SECONDS)
         self._model = model
         self.model_version = f"anthropic:{model}"
 

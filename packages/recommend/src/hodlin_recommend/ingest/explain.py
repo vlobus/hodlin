@@ -7,13 +7,16 @@ per headline -> numbered candidates -> single LLM call -> validate -> expand
 index selections into EvidenceRefs -> persist. Idempotent: an anomaly that
 already has an explanation is skipped before any model or LLM work is spent.
 
-Sentiment scoring is sequential ``to_thread`` here, not the serving executor:
-one job scores a handful of headlines one at a time, so there's no fan-out to
-bound; it just must not block the event loop (the API stays responsive while
-a scheduled explanation runs).
+Sentiment scoring is sequential and off the event loop. When the scheduler
+(T8) wires this job into the same process as serving, pass the app's
+single-lane inference executor: the job and HTTP requests then share one
+FinBERT instance through one thread, which is what makes concurrent use safe
+(CPU oversubscription + tokenizer thread-safety, D18). Standalone callers
+(tests) can omit it and get the loop's default pool.
 """
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -41,6 +44,7 @@ async def explain_anomaly(
     *,
     llm: ExplainerLLM,
     sentiment_model: SentimentModel,
+    inference_executor: ThreadPoolExecutor | None = None,
 ) -> Explanation | None:
     """Produce and store the explanation for ``anomaly``; returns it, or
     ``None`` if the anomaly is already explained (nothing was spent or
@@ -57,10 +61,13 @@ async def explain_anomaly(
         until=anomaly.bar_ts + BAR_SPAN,
         limit=MAX_NEWS,
     )
+    loop = asyncio.get_running_loop()
     candidates = [
         ScoredNews(
             item=item,
-            score=await asyncio.to_thread(sentiment_model.score, item.headline),
+            score=await loop.run_in_executor(
+                inference_executor, sentiment_model.score, item.headline
+            ),
         )
         for item in news
     ]
