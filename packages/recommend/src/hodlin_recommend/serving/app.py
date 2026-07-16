@@ -24,6 +24,7 @@ the composition root hands one in, the app takes ownership of its shutdown.
 """
 
 import asyncio
+import contextlib
 from collections.abc import AsyncIterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import AsyncExitStack, asynccontextmanager
@@ -53,11 +54,20 @@ class SchedulerLike(Protocol):
     def shutdown(self, wait: bool = True) -> None: ...
 
 
+@runtime_checkable
+class PollerLike(Protocol):
+    """A run-forever loop the lifespan owns as a background task; cancelling
+    the task is the stop signal. Satisfied by ``UpdatePoller``."""
+
+    async def run(self) -> None: ...
+
+
 def create_app(
     *,
     sentiment_model: SentimentModel,
     inference_executor: ThreadPoolExecutor | None = None,
     scheduler: SchedulerLike | None = None,
+    poller: PollerLike | None = None,
     session_factory: SessionFactory | None = None,
     resources: AsyncExitStack | None = None,
 ) -> FastAPI:
@@ -67,11 +77,22 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        poll_task: asyncio.Task[None] | None = None
         try:
             if scheduler is not None:
                 scheduler.start()
+            if poller is not None:
+                poll_task = asyncio.create_task(poller.run(), name="telegram-poller")
             yield
         finally:
+            if poll_task is not None:
+                # Cancellation is the poller's stop signal; await the unwind
+                # so no inbound handler is mid-flight when resources close.
+                # Suppress Exception too: a task that somehow crashed earlier
+                # re-raises here, and it must not abort the rest of teardown.
+                poll_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await poll_task
             if scheduler is not None:
                 # AsyncIOScheduler defers the actual stop to a loop callback
                 # and cancels (not awaits) in-flight ticks: yield once so the

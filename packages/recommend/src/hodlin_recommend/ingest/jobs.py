@@ -20,6 +20,8 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from hodlin_recommend.connectors.base import NewsSource, PriceBarSource, SourceUnavailable
+from hodlin_recommend.delivery.formatting import format_anomaly
+from hodlin_recommend.delivery.telegram import Messenger
 from hodlin_recommend.domain.anomaly import detect_series
 from hodlin_recommend.domain.asset_config import AssetConfig
 from hodlin_recommend.domain.explanation import ExplainerLLM, LLMUnavailable, MalformedReply
@@ -43,6 +45,7 @@ BARS_LOOKBACK = timedelta(days=5)
 NEWS_LOOKBACK = timedelta(days=3)
 DETECT_TAIL = 8
 EXPLAIN_BATCH = 5
+NOTIFY_BATCH = 5
 
 
 @dataclass(frozen=True)
@@ -204,6 +207,43 @@ async def explain_anomalies(
         return JobOutcome(items=explained, detail="; ".join(notes) or None)
 
     return await run_audited(session_factory, "explain_anomalies", work)
+
+
+async def notify_anomalies(
+    session_factory: SessionFactory,
+    *,
+    messenger: Messenger,
+    chat_id: int,
+) -> JobOutcome:
+    """Send each explained-but-unnotified anomaly to the allowlisted chat,
+    oldest first, at most once.
+
+    The once-guarantee is a compare-and-set on ``anomalies.notified_at``:
+    claim (uncommitted) -> send -> commit. A failed send rolls the claim back,
+    so the anomaly is retried next tick; a crash after a successful send but
+    before the commit re-sends next tick — at-least-once, because a rare
+    duplicate alert beats a silently missing one. Telegram being down aborts
+    the batch like any dead sink and marks the run "error".
+    """
+
+    async def work(session: AsyncSession) -> JobOutcome:
+        repo = AnomalyRepository(session)
+        queue = await repo.explained_unnotified(limit=NOTIFY_BATCH)
+        sent = 0
+        for anomaly, explanation in queue:
+            claimed = await repo.mark_notified(anomaly.symbol, anomaly.interval, anomaly.bar_ts)
+            if not claimed:
+                continue  # someone else won the race; their send stands
+            try:
+                await messenger.send(chat_id, format_anomaly(anomaly, explanation))
+            except SourceUnavailable as exc:
+                await session.rollback()  # release the claim; retry next tick
+                return JobOutcome(items=sent, detail=str(exc), status="error")
+            await session.commit()  # claim becomes durable only after the send
+            sent += 1
+        return JobOutcome(items=sent)
+
+    return await run_audited(session_factory, "notify_anomalies", work)
 
 
 async def run_backfill(

@@ -22,6 +22,8 @@ from hodlin_recommend.config import Settings
 from hodlin_recommend.connectors.base import RateLimiter
 from hodlin_recommend.connectors.finnhub import FinnhubNewsSource
 from hodlin_recommend.connectors.massive import MassivePriceBarSource
+from hodlin_recommend.delivery.poller import UpdatePoller, latest_anomaly_reply
+from hodlin_recommend.delivery.telegram import TelegramClient
 from hodlin_recommend.domain.explanation import AnthropicExplainer
 from hodlin_recommend.domain.sentiment import FinBertModel
 from hodlin_recommend.ingest.scheduler import build_scheduler
@@ -49,6 +51,18 @@ def main() -> None:
         rate=RateLimiter(settings.massive_rate_per_min),
     )
 
+    telegram = TelegramClient(
+        client,
+        token=settings.telegram_bot_token,
+        base_url=settings.telegram_base_url,
+        rate=RateLimiter(settings.telegram_rate_per_min),
+    )
+    poller = UpdatePoller(
+        telegram,
+        allowed_chat_id=settings.telegram_chat_id,
+        reply_text=latest_anomaly_reply(session_factory),
+    )
+
     sentiment_model = FinBertModel()
     llm = AnthropicExplainer(api_key=settings.anthropic_api_key, model=settings.anthropic_model)
     inference_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="inference")
@@ -59,6 +73,8 @@ def main() -> None:
         news_source=news_source,
         llm=llm,
         sentiment_model=sentiment_model,
+        messenger=telegram,
+        chat_id=settings.telegram_chat_id,
         inference_executor=inference_executor,
     )
 
@@ -70,6 +86,7 @@ def main() -> None:
         sentiment_model=sentiment_model,
         inference_executor=inference_executor,
         scheduler=scheduler,
+        poller=poller,
         session_factory=session_factory,
         resources=resources,
     )

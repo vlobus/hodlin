@@ -85,6 +85,7 @@ class MassivePriceBarSource:
             params=params,
             rate=self._rate,
             retry=self._retry,
+            secrets=(self._api_key,),  # httpx errors quote the URL, key included
         )
         bars = payload.get("bars") if isinstance(payload, Mapping) else None
         if not isinstance(bars, list):

@@ -68,6 +68,7 @@ class FinnhubNewsSource:
             params=params,
             rate=self._rate,
             retry=self._retry,
+            secrets=(self._api_key,),  # httpx errors quote the URL, key included
         )
         if not isinstance(payload, list):
             raise SourceUnavailable(self.source, "expected a JSON array of articles")

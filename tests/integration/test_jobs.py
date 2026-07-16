@@ -251,12 +251,19 @@ async def test_scheduled_run_lands_in_ingest_runs_and_app_reports_ready(
     engine: AsyncEngine,
 ) -> None:
     factory = create_session_factory(engine)
+
+    class QuietMessenger:
+        async def send(self, chat_id: int, text: str) -> None:
+            return None
+
     scheduler = build_scheduler(
         session_factory=factory,
         bar_source=FakeBarSource(_bars()),
         news_source=FakeNewsSource(),
         llm=MockLLM('{"reasoning": "why", "evidence_indices": []}'),
         sentiment_model=FakeSentimentModel(),
+        messenger=QuietMessenger(),
+        chat_id=42,
         assets=[_ASSET],
     )
     app = create_app(

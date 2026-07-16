@@ -116,18 +116,39 @@ async def request_json(
     source: str,
     url: str,
     params: Mapping[str, str] | None = None,
+    method: str = "GET",
+    json_body: Any | None = None,
+    http_timeout: httpx.Timeout | None = None,
     rate: RateLimiter | None = None,
     retry: RetryPolicy = DEFAULT_RETRY,
+    secrets: tuple[str, ...] = (),
 ) -> Any:
-    """GET ``url`` and return parsed JSON, applying the shared rate-limit + retry
-    policy and wrapping any HTTP failure as ``SourceUnavailable``."""
+    """Call ``url`` and return parsed JSON, applying the shared rate-limit +
+    retry policy and wrapping any HTTP failure as ``SourceUnavailable``.
+
+    ``method``/``json_body`` exist for POST-style APIs (Telegram);
+    ``http_timeout`` overrides the client default per request (a long poll
+    must outlive it). Note retries make non-idempotent POSTs at-least-once:
+    a reply lost on the wire is retried even if the server acted — callers
+    choose semantics.
+
+    ``secrets`` are redacted from the wrapped error message: httpx errors
+    quote the full URL, which carries API keys (query params) or the bot
+    token (path) — and ``SourceUnavailable`` text ends up *persisted* in
+    ``ingest_runs.detail``, so the secret must be scrubbed at the wrap.
+    """
+    request_timeout = http_timeout if http_timeout is not None else httpx.USE_CLIENT_DEFAULT
 
     async def _once() -> Any:
         if rate is not None:
             async with rate:
-                response = await client.get(url, params=params)
+                response = await client.request(
+                    method, url, params=params, json=json_body, timeout=request_timeout
+                )
         else:
-            response = await client.get(url, params=params)
+            response = await client.request(
+                method, url, params=params, json=json_body, timeout=request_timeout
+            )
         response.raise_for_status()
         # parse_float=Decimal keeps money exact: JSON numbers never become floats
         # (which the domain models reject), so precision survives from the wire.
@@ -143,6 +164,13 @@ async def request_json(
             with attempt:
                 return await _once()
     except (httpx.HTTPError, json.JSONDecodeError) as exc:
-        raise SourceUnavailable(source, exc) from exc
+        raise SourceUnavailable(source, _redact(str(exc), secrets)) from exc
     # Unreachable: the loop either returns or reraises, but satisfies the type.
     raise SourceUnavailable(source, "retries exhausted")
+
+
+def _redact(text: str, secrets: tuple[str, ...]) -> str:
+    for secret in secrets:
+        if secret:
+            text = text.replace(secret, "***")
+    return text

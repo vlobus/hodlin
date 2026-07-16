@@ -1,7 +1,7 @@
 """Scheduler wiring tests — offline, no Postgres, no real ticks on real time.
 
 What's asserted is *configuration and lifecycle*, the parts that are ours:
-the four recurring jobs exist with overlap protection (``max_instances=1``),
+the five recurring jobs exist with overlap protection (``max_instances=1``),
 coalescing, and a misfire grace; backfill registers as a one-shot; the app
 lifespan starts the scheduler, a job actually fires on the loop, and shutdown
 leaves nothing running. Firing on a *schedule* against a real database is the
@@ -24,6 +24,7 @@ from hodlin_recommend.ingest.scheduler import (
     EXPLAIN_EVERY_S,
     MISFIRE_GRACE_S,
     NEWS_EVERY_S,
+    NOTIFY_EVERY_S,
     build_scheduler,
 )
 from hodlin_recommend.serving.app import SchedulerLike, create_app
@@ -66,6 +67,11 @@ class MockLLM:
         return '{"reasoning": "why", "evidence_indices": []}'
 
 
+class FakeMessenger:
+    async def send(self, chat_id: int, text: str) -> None:
+        return None
+
+
 def _build(*, backfill_on_start: bool = True) -> AsyncIOScheduler:
     # A real factory over an engine that never connects — jobs never run here.
     factory = create_session_factory(create_engine("postgresql+asyncpg://x:x@localhost/x"))
@@ -75,6 +81,8 @@ def _build(*, backfill_on_start: bool = True) -> AsyncIOScheduler:
         news_source=FakeNewsSource(),
         llm=MockLLM(),
         sentiment_model=FakeSentimentModel(),
+        messenger=FakeMessenger(),
+        chat_id=42,
         backfill_on_start=backfill_on_start,
     )
 
@@ -84,10 +92,11 @@ EXPECTED_INTERVALS = {
     "ingest_news": NEWS_EVERY_S,
     "detect_anomalies": DETECT_EVERY_S,
     "explain_anomalies": EXPLAIN_EVERY_S,
+    "notify_anomalies": NOTIFY_EVERY_S,
 }
 
 
-async def test_four_recurring_jobs_with_overlap_protection() -> None:
+async def test_recurring_jobs_registered_with_overlap_protection() -> None:
     scheduler = _build()
     scheduler.start(paused=True)  # materializes pending jobs without firing any
     try:
