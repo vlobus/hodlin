@@ -40,3 +40,12 @@ class Settings(BaseSettings):
     telegram_base_url: str
     telegram_chat_id: int
     telegram_rate_per_min: float
+
+    # Deployment/runtime toggles (T10). Not secrets, so defaults are allowed
+    # (D17): local runs bind loopback; the container overrides HOST=0.0.0.0.
+    # ``demo_mode`` swaps the price/news providers for the committed offline
+    # stand-ins so a clean machine flows a seeded anomaly end-to-end without a
+    # Massive/Finnhub key (Anthropic + Telegram are still live — that's the point).
+    host: str = "127.0.0.1"
+    port: int = 8000
+    demo_mode: bool = False

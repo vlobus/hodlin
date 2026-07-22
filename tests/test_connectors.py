@@ -203,13 +203,21 @@ async def test_seed_source_parses_committed_csv() -> None:
     assert all(isinstance(b.close, Decimal) and b.source == "seed" for b in bars)
 
 
-async def test_seed_source_filters_by_range_and_symbol() -> None:
+async def test_seed_source_filters_by_symbol_but_ignores_the_window() -> None:
+    # A fixed demo fixture stands in for "recent history": it returns its whole
+    # committed series regardless of the requested [start, end], so the
+    # scheduled backfill (which asks for the last N days) finds it whatever the
+    # wall-clock date. Symbol/interval still filter.
     src = SeedBarSource()
     narrow = await src.get_candles(
         "AAPL", "1d", datetime(2024, 6, 3, tzinfo=UTC), datetime(2024, 6, 5, tzinfo=UTC)
     )
     assert {b.symbol for b in narrow} == {"AAPL"}
-    assert len(narrow) == 3  # 3rd, 4th, 5th inclusive
+    assert len(narrow) == 25  # the full AAPL series, not the 3-day window
+    other = await src.get_candles(
+        "AAPL", "1h", datetime(2024, 6, 3, tzinfo=UTC), datetime(2024, 6, 5, tzinfo=UTC)
+    )
+    assert other == []  # interval still filters
 
 
 async def test_connectors_satisfy_protocols(rate: RateLimiter) -> None:

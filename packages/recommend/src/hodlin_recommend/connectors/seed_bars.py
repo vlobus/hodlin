@@ -3,6 +3,13 @@
 A deterministic, offline fallback and cold-start backfill source: it satisfies
 the same Protocol as the live providers but reads bars from a bundled CSV, so
 the demo runs on a clean machine with no network and no keys. Later DVC-tracked.
+
+The requested ``[start, end]`` window is ignored: this is a fixed historical
+fixture (real June-2024 bars carrying the demo anomaly) standing in for
+"whatever recent history you asked for". Honouring the window would make the
+demo depend on the wall clock — the scheduled backfill asks for the last N
+days, which the fixed dates would never fall inside. The live providers
+(Massive) do honour the window; only this stand-in returns its whole series.
 """
 
 import csv
@@ -24,16 +31,14 @@ class SeedBarSource:
     async def get_candles(
         self, symbol: str, interval: str, start: datetime, end: datetime
     ) -> list[PriceBar]:
-        start_utc = start.astimezone(UTC)
-        end_utc = end.astimezone(UTC)
+        # start/end are accepted to satisfy the Protocol but deliberately
+        # ignored — see the module docstring.
         bars: list[PriceBar] = []
         with self._csv_path.open(newline="") as handle:
             for row in csv.DictReader(handle):
                 if row["symbol"] != symbol or row["interval"] != interval:
                     continue
                 ts = datetime.fromisoformat(row["ts"]).astimezone(UTC)
-                if not (start_utc <= ts <= end_utc):
-                    continue
                 volume = row.get("volume") or None
                 bars.append(
                     PriceBar(
