@@ -28,7 +28,9 @@ services:
       retries: 10
     volumes:
       # pg18+ wants a single mount here (data lands in a version subdir), not
-      # at /var/lib/postgresql/data — see docker-library/postgres#1259.
+      # at /var/lib/postgresql/data — see docker-library/postgres#1259. If you
+      # have a pre-existing hodlin_pgdata volume from the old path, reset it
+      # once with `docker compose down -v`.
       - hodlin_pgdata:/var/lib/postgresql
 
   app:
@@ -47,7 +49,7 @@ services:
       DATABASE_URL: postgresql+asyncpg://hodlin:hodlin@db:5432/hodlin
       HOST: 0.0.0.0
       PORT: "8000"
-      DEMO_MODE: "true"
+      DEMO_MODE: "true"  # demo harness — drop this line to run live providers
     ports:
       - "8000:8000"
     volumes:
