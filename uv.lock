@@ -468,11 +468,21 @@ name = "hodlin-execute"
 version = "0.1.0"
 source = { editable = "packages/execute" }
 dependencies = [
+    { name = "alembic" },
+    { name = "asyncpg" },
     { name = "hodlin-contracts" },
+    { name = "pydantic-settings" },
+    { name = "sqlalchemy", extra = ["asyncio"] },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "hodlin-contracts", editable = "packages/contracts" }]
+requires-dist = [
+    { name = "alembic", specifier = ">=1.14" },
+    { name = "asyncpg", specifier = ">=0.30" },
+    { name = "hodlin-contracts", editable = "packages/contracts" },
+    { name = "pydantic-settings", specifier = ">=2.7" },
+    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0" },
+]
 
 [[package]]
 name = "hodlin-recommend"
