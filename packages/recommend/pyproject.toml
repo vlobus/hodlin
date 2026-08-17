@@ -29,3 +29,5 @@ packages = ["src/hodlin_recommend"]
 
 [tool.uv.sources]
 hodlin-contracts = { workspace = true }
+# CPU-only torch from the pytorch-cpu index declared in the workspace root.
+torch = { index = "pytorch-cpu" }

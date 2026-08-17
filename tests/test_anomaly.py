@@ -110,6 +110,8 @@ def test_invalid_inputs_raise() -> None:
 async def test_seed_data_contains_the_demo_anomaly() -> None:
     """The committed CSV must trip the detector at the demo config (window=15,
     threshold=2.5) so the cold-start pass has something to show offline."""
+    # The window args satisfy the Protocol; the fixture returns its whole
+    # series regardless (see SeedBarSource's docstring).
     bars = await SeedBarSource().get_candles(
         "BTC-USD", "1d", datetime(2024, 6, 1, tzinfo=UTC), datetime(2024, 7, 1, tzinfo=UTC)
     )

@@ -1,6 +1,7 @@
 """Runtime configuration for the recommend domain.
 
-Loaded once at the composition root (``main.py``). Values come from the
+Loaded once at each entry point and handed to the composition root
+(``composition.build_components``). Values come from the
 environment (or a local ``.env``), so secrets never live in code. Telegram and
 Anthropic settings are added by their own tasks.
 """

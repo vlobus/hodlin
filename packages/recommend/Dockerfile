@@ -6,7 +6,9 @@
 FROM python:3.14-slim-bookworm
 
 # The uv binary from its official distroless image — no pip bootstrap needed.
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+# Pinned, not :latest: this is the version that wrote uv.lock, and a floating
+# tag could change resolution behaviour under `--frozen` with no repo change.
+COPY --from=ghcr.io/astral-sh/uv:0.9.9 /uv /uvx /bin/
 
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
@@ -37,6 +39,14 @@ WORKDIR /app/packages/recommend
 
 COPY packages/recommend/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+# Drop root: the app only needs to read its venv and write the model cache. A
+# fresh named volume mounted at /models inherits this ownership from the image,
+# so HF can populate it unprivileged.
+RUN useradd --create-home --uid 10001 hodlin \
+    && mkdir -p /models \
+    && chown -R hodlin:hodlin /models
+USER hodlin
 
 EXPOSE 8000
 ENTRYPOINT ["docker-entrypoint.sh"]

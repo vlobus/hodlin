@@ -4,9 +4,10 @@
 .venv
 **/__pycache__
 **/*.py[cod]
-.pytest_cache
-.ruff_cache
-.mypy_cache
+**/.pytest_cache
+**/.ruff_cache
+**/.mypy_cache
+**/.import_linter_cache
 tests
 docs
 *.md

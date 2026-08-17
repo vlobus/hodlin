@@ -16,25 +16,30 @@ You need Docker, and — for the live explanation and delivery — an
 
 ```sh
 cp .env.example .env      # fill in ANTHROPIC_API_KEY and the TELEGRAM_* values
-docker compose up         # builds the image, applies migrations, starts serving
-```
-
-In the default demo mode, prices come from a committed seed CSV and news is
-skipped, so **only Anthropic and Telegram need real credentials** (the
-Finnhub/Massive placeholders can stay as-is). On startup the app backfills the
-seed bars, detects the demo anomaly (a sharp late-June BTC drop), explains it,
-and messages it to your chat. The first boot downloads the FinBERT model
-(~440 MB, cached in a volume afterward), so give it a couple of minutes; once
-`http://localhost:8000/health/ready` returns `200`, the pipeline is live.
-
-**See it immediately** (one-shot, no waiting for the scheduler):
-
-```sh
 docker compose run --rm app python -m hodlin_recommend.demo
 ```
 
-This runs backfill → explain → notify once and prints each step, delivering the
-anomaly to Telegram in one command.
+That one command starts Postgres, applies migrations, and runs the pipeline
+once end-to-end — backfill → explain → notify, printing each step — so the
+anomaly lands in your Telegram chat without waiting for a scheduler tick.
+
+In the default demo mode, prices come from a committed seed CSV and news is
+skipped, so **only Anthropic and Telegram need real credentials** (the
+Finnhub/Massive placeholders can stay as-is). The first run downloads the
+FinBERT model (~440 MB, cached in a volume afterward), so give it a minute.
+
+To run it as the real service instead — scheduler, API, and Telegram poller:
+
+```sh
+docker compose up         # builds the image, applies migrations, starts serving
+```
+
+It backfills the seed bars on startup, detects the demo anomaly (a sharp
+late-June BTC drop), then explains and delivers it on its own ticks — a few
+minutes, since explain runs every 5. Once
+`http://localhost:8000/health/ready` returns `200`, the pipeline is live. Note
+that an anomaly notifies exactly once, so whichever of the two paths you run
+first is the one that delivers the alert.
 
 ## Develop
 

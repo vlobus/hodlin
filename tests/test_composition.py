@@ -6,6 +6,8 @@ source selection, so that's what we pin. Everything else in the composition is
 straight-line wiring verified by the app booting.
 """
 
+from collections.abc import AsyncIterator
+
 import httpx
 import pytest
 from hodlin_recommend.composition import select_bar_source, select_news_source
@@ -33,6 +35,16 @@ _BASE = {
 }
 
 
+@pytest.fixture(autouse=True)
+def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The defaults test asserts on values the shell can supply: HOST/PORT/
+    # DEMO_MODE are exactly what docker-compose.yml exports, so a developer
+    # who sourced the app env would otherwise fail the suite for no code
+    # reason. _env_file=None (below) only closes the dotenv path, not os.environ.
+    for name in ("HOST", "PORT", "DEMO_MODE"):
+        monkeypatch.delenv(name, raising=False)
+
+
 def _settings(**overrides: object) -> Settings:
     # _env_file=None so a developer's local .env can't leak into these
     # assertions (host/port/demo_mode aren't in _BASE, so they'd otherwise
@@ -42,9 +54,11 @@ def _settings(**overrides: object) -> Settings:
 
 
 @pytest.fixture
-async def client() -> httpx.AsyncClient:
+async def client() -> AsyncIterator[httpx.AsyncClient]:
+    # yield, not return: returning from inside the `async with` closes the
+    # client on the way out and hands the test a dead one.
     async with httpx.AsyncClient() as c:
-        return c
+        yield c
 
 
 def test_defaults_are_non_secret_and_production_leaning() -> None:
@@ -59,6 +73,7 @@ async def test_live_mode_selects_the_real_providers(client: httpx.AsyncClient) -
     bars = select_bar_source(settings, client)
     news = select_news_source(settings, client)
 
+    assert not client.is_closed  # the live providers get a usable client
     assert isinstance(bars, MassivePriceBarSource)
     assert isinstance(news, FinnhubNewsSource)
     assert isinstance(bars, PriceBarSource)  # and still satisfies the seam

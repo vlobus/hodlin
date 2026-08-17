@@ -13,7 +13,7 @@ polling; the explain tick is shorter so a fresh anomaly gets its "why" fast,
 and the notify tick shorter still so the explained anomaly reaches Telegram
 within a minute.
 The builder only assembles — construction of the concretes stays in the
-composition root (``main.py``), and tests hand in fakes.
+composition root (``composition.py``), and tests hand in fakes.
 """
 
 from collections.abc import Sequence
