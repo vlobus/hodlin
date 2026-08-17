@@ -49,8 +49,10 @@ async def backfill_assets(
 ) -> list[BackfillResult]:
     """Backfill + initial detection pass for every configured asset.
 
-    ``end`` defaults to now; the seed-data demo passes a fixed ``end`` inside
-    the CSV's date range, since seed bars are historical.
+    ``end`` defaults to now and bounds the fetch window the source is asked
+    for; tests pass a fixed value to keep a run reproducible. The offline seed
+    source ignores that window by design (it is a fixed historical fixture),
+    so in demo mode the window only shapes what the live providers return.
     """
     end = end if end is not None else datetime.now(UTC)
     results: list[BackfillResult] = []

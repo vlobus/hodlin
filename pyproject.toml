@@ -22,6 +22,16 @@ hodlin-contracts = { workspace = true }
 hodlin-recommend = { workspace = true }
 hodlin-execute = { workspace = true }
 
+# PyPI's torch pulls the whole CUDA stack (~2.9 GB of nvidia-* wheels) on every
+# Linux resolution — dead weight in a CPU-only image and on a CPU-only laptop.
+# FinBERT inference here is CPU-bound by design (D18), so pin torch to the
+# CPU-only wheels. `explicit` keeps this index out of everything else's
+# resolution: only the packages routed here in [tool.uv.sources] may use it.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
 [dependency-groups]
 dev = [
     "ruff>=0.9",

@@ -1,7 +1,7 @@
 """FastAPI application factory.
 
 The factory takes its dependencies as arguments instead of building them: the
-composition root (``main.py``) constructs the expensive, once-only pieces and
+composition root (``composition.py``) constructs the expensive, once-only pieces and
 passes them in; tests pass fakes or omit what they don't exercise. The app
 owns no globals — everything shared lives on ``app.state``.
 

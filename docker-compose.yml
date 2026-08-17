@@ -1,8 +1,20 @@
-# Local infrastructure for development and integration tests.
+# Local infrastructure + the recommend app (T10).
 #
-# For now this provides Postgres only; the recommend app service is added in
-# T10. Bring the database up and point the test suite at it:
+#   cp .env.example .env      # then fill in ANTHROPIC_* and TELEGRAM_*
+#   docker compose up         # migrations apply, then the app serves + schedules
 #
+# In demo mode (default here) prices come from the committed seed CSV and news
+# is skipped, so only Anthropic + Telegram need real credentials. The scheduled
+# path delivers the seeded anomaly a few minutes after boot (explain ticks every
+# 5 min, after the first-boot model download). To see the delivery immediately,
+# run the one-shot INSTEAD of `up` (it starts the db itself):
+#
+#   docker compose run --rm app python -m hodlin_recommend.demo
+#
+# Either way the anomaly notifies exactly once, so whichever you run first is
+# the one that delivers it.
+#
+# Integration tests still use just the db service:
 #   docker compose up -d db
 #   HODLIN_TEST_DATABASE_URL=postgresql+asyncpg://hodlin:hodlin@localhost:5432/hodlin \
 #     uv run pytest tests/integration
@@ -21,7 +33,52 @@ services:
       timeout: 3s
       retries: 10
     volumes:
-      - hodlin_pgdata:/var/lib/postgresql/data
+      # pg18+ wants a single mount here (data lands in a version subdir), not
+      # at /var/lib/postgresql/data — see docker-library/postgres#1259. If you
+      # have a pre-existing hodlin_pgdata volume from the old path, reset it
+      # once with `docker compose down -v`.
+      - hodlin_pgdata:/var/lib/postgresql
+
+  app:
+    build:
+      context: .
+      dockerfile: packages/recommend/Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      # Reach Postgres by its compose service name, and override the loopback
+      # bind + provider selection for the containerised demo. These win over
+      # whatever .env carries.
+      DATABASE_URL: postgresql+asyncpg://hodlin:hodlin@db:5432/hodlin
+      HOST: 0.0.0.0
+      PORT: "8000"
+      DEMO_MODE: "true"  # demo harness — drop this line to run live providers
+    # A network blip during the first model download shouldn't leave a dead app
+    # next to a healthy db; the entrypoint's migrations are idempotent.
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      # Persist the FinBERT weights (~440 MB) so only the first boot downloads.
+      # The container runs unprivileged, so a hodlin_models volume created by an
+      # earlier root-owned image needs one `docker compose down -v` to reset.
+      - hodlin_models:/models
+    healthcheck:
+      # python is always present; curl/wget are not in the slim image. 503 (not
+      # ready) raises, so the container stays "starting" until deps are up.
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready')
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 240s  # first boot loads/downloads the model before serving
 
 volumes:
   hodlin_pgdata:
+  hodlin_models:

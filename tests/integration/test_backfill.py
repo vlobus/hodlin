@@ -16,7 +16,9 @@ from hodlin_recommend.ingest.backfill import backfill_assets
 from hodlin_recommend.store.repositories import AnomalyRepository, PriceBarRepository
 from sqlalchemy.ext.asyncio import AsyncSession
 
-# Inside the committed CSV's date range — seed bars are historical.
+# A fixed `end` so the run doesn't depend on the wall clock. The seed source
+# ignores the window (fixed fixture), so this only pins the dead-source path
+# and documents the era the CSV covers.
 _END = datetime(2024, 7, 1, tzinfo=UTC)
 
 _ASSETS = [
