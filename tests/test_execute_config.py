@@ -1,16 +1,36 @@
-"""Execute-domain settings: fail-fast, and prefixed so secrets can't cross over.
+"""Execute-domain settings: fail-fast, prefixed, and distributed separately.
 
-The ``EXECUTE_`` prefix is the point of these tests rather than a naming detail
-(D34): if this domain also answered to the recommend domain's bare
-``DATABASE_URL``, then handing one container the other's environment would
-silently work, and the isolation would be a comment rather than a mechanism.
+Two mechanisms, and these tests keep them apart (D34), because conflating them
+is how a boundary turns into a comment:
+
+* the ``EXECUTE_`` prefix — if this domain also answered to the recommend
+  domain's bare ``DATABASE_URL``, handing one container the other's environment
+  would silently work;
+* the separate env file — a prefix cannot protect a credential that sits in a
+  file the other domain's container is handed wholesale (compose injects every
+  key of an ``env_file``), so the two domains' values must not share one file.
 """
+
+from pathlib import Path
 
 import pytest
 from hodlin_execute.config import Settings
 from pydantic import ValidationError
 
 _URL = "postgresql+asyncpg://hodlin_execute:pw@localhost:5432/hodlin_execute"
+
+_ROOT = Path(__file__).resolve().parents[1]
+_RECOMMEND_ENV_EXAMPLE = _ROOT / ".env.example"
+_EXECUTE_ENV_EXAMPLE = _ROOT / ".env.execute.example"
+
+
+def _assignments(env_file: Path) -> list[str]:
+    """The variable names an env file assigns, comments and blanks aside."""
+    return [
+        line.split("=", 1)[0].strip()
+        for line in env_file.read_text().splitlines()
+        if "=" in line and not line.lstrip().startswith("#")
+    ]
 
 
 @pytest.fixture(autouse=True)
@@ -51,3 +71,23 @@ def test_explicit_values_bypass_the_environment_for_tests() -> None:
     settings = Settings(_env_file=None, database_url=_URL)  # type: ignore[call-arg]
 
     assert settings.database_url == _URL
+
+
+def test_the_execute_domains_settings_read_their_own_env_file() -> None:
+    """Not ``.env``: that file is the recommend domain's, and compose hands it to
+    the recommend container in full."""
+    assert Settings.model_config["env_file"] == ".env.execute"
+
+
+def test_the_two_domains_env_templates_share_no_variables() -> None:
+    """The templates are what a developer copies, and what compose then mounts
+    per service — so co-locating the two domains' variables in one of them is the
+    leak, whatever the code does afterwards. The recommend file must carry no
+    ``EXECUTE_*``, and the execute file must carry nothing else."""
+    recommend = _assignments(_RECOMMEND_ENV_EXAMPLE)
+    execute = _assignments(_EXECUTE_ENV_EXAMPLE)
+
+    assert execute, "the execute template must list the variables this domain reads"
+    assert [name for name in execute if name.startswith("EXECUTE_")] == execute
+    assert [name for name in recommend if name.startswith("EXECUTE_")] == []
+    assert set(recommend).isdisjoint(execute)

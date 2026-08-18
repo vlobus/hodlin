@@ -111,24 +111,28 @@ def upgrade() -> None:
     op.create_table(
         "approvals",
         sa.Column("id", sa.BigInteger(), primary_key=True),
-        sa.Column("proposal_id", sa.BigInteger(), nullable=False),
+        # The surrogate proposals.id — named apart from proposals.proposal_id
+        # (the contract's UUID) so the two can't be swapped by a caller.
+        sa.Column("proposal_row_id", sa.BigInteger(), nullable=False),
         sa.Column("operator_id", sa.BigInteger(), nullable=False),
         sa.Column("decision", sa.String(length=16), nullable=False),
         sa.Column("reason", sa.Text(), nullable=True),
         sa.Column("token_jti", postgresql.UUID(as_uuid=True), nullable=True),
         sa.Column("decided_at", sa.DateTime(timezone=True), server_default=_NOW, nullable=False),
-        sa.ForeignKeyConstraint(["proposal_id"], ["proposals.id"], ondelete="CASCADE"),
+        sa.ForeignKeyConstraint(["proposal_row_id"], ["proposals.id"], ondelete="CASCADE"),
         sa.ForeignKeyConstraint(["operator_id"], ["operators.id"], ondelete="RESTRICT"),
         sa.ForeignKeyConstraint(["token_jti"], ["auth_tokens.jti"], ondelete="SET NULL"),
     )
-    op.create_index("ix_approvals_proposal", "approvals", ["proposal_id", "decided_at"])
+    op.create_index("ix_approvals_proposal", "approvals", ["proposal_row_id", "decided_at"])
 
     op.create_table(
         "tx_attempts",
         sa.Column("id", sa.BigInteger(), primary_key=True),
-        sa.Column("proposal_id", sa.BigInteger(), nullable=False),
+        sa.Column("proposal_row_id", sa.BigInteger(), nullable=False),
         sa.Column("token_jti", postgresql.UUID(as_uuid=True), nullable=False),
-        sa.Column("chain_id", sa.Integer(), nullable=False),
+        # 64-bit: EIP-155 chain ids aren't bounded by 2**31, and this row is
+        # written before the broadcast, where an overflow is unaffordable.
+        sa.Column("chain_id", sa.BigInteger(), nullable=False),
         sa.Column("to_address", sa.String(length=42), nullable=False),
         sa.Column("recipient_label", sa.String(length=64), nullable=False),
         sa.Column("value_wei", _WEI, nullable=False),
@@ -143,7 +147,7 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=_NOW, nullable=False),
         sa.Column("broadcast_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("confirmed_at", sa.DateTime(timezone=True), nullable=True),
-        sa.ForeignKeyConstraint(["proposal_id"], ["proposals.id"], ondelete="RESTRICT"),
+        sa.ForeignKeyConstraint(["proposal_row_id"], ["proposals.id"], ondelete="RESTRICT"),
         sa.ForeignKeyConstraint(["token_jti"], ["auth_tokens.jti"], ondelete="RESTRICT"),
         # Structural single-use insurance: one attempt per token, even if the
         # replay store were bypassed.

@@ -14,16 +14,22 @@ from alembic import context
 from hodlin_recommend.store import tables  # noqa: F401  (registers ORM models)
 from hodlin_recommend.store.db import Base
 from sqlalchemy import Connection, pool
-from sqlalchemy.ext.asyncio import async_engine_from_config
+from sqlalchemy.ext.asyncio import create_async_engine
 
 config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-database_url = os.getenv("DATABASE_URL")
-if not database_url:
+_configured_url = os.getenv("DATABASE_URL")
+if not _configured_url:
     raise RuntimeError("DATABASE_URL must be set to run migrations")
-config.set_main_option("sqlalchemy.url", database_url)
+# Annotated, so the functions below see a ``str`` rather than the ``str | None``
+# a module-level narrowing doesn't carry into a nested scope.
+database_url: str = _configured_url
+# Handed to the engine directly rather than through
+# ``config.set_main_option``: that stores it in a ConfigParser section, where a
+# percent sign is interpolation syntax — a percent-encoded password (``p%40ss``)
+# would fail the migration with InterpolationSyntaxError instead of connecting.
 
 target_metadata = Base.metadata
 
@@ -35,11 +41,7 @@ def _run_migrations(connection: Connection) -> None:
 
 
 async def _run_async_migrations() -> None:
-    connectable = async_engine_from_config(
-        config.get_section(config.config_ini_section, {}),
-        prefix="sqlalchemy.",
-        poolclass=pool.NullPool,
-    )
+    connectable = create_async_engine(database_url, poolclass=pool.NullPool)
     async with connectable.connect() as connection:
         await connection.run_sync(_run_migrations)
     await connectable.dispose()
@@ -47,7 +49,7 @@ async def _run_async_migrations() -> None:
 
 def run_migrations_offline() -> None:
     context.configure(
-        url=config.get_main_option("sqlalchemy.url"),
+        url=database_url,
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},

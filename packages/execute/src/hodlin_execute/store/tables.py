@@ -28,7 +28,6 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
-    Integer,
     Numeric,
     String,
     Text,
@@ -187,10 +186,15 @@ class Approval(Base):
     """
 
     __tablename__ = "approvals"
-    __table_args__ = (Index("ix_approvals_proposal", "proposal_id", "decided_at"),)
+    __table_args__ = (Index("ix_approvals_proposal", "proposal_row_id", "decided_at"),)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    proposal_id: Mapped[int] = mapped_column(ForeignKey("proposals.id", ondelete="CASCADE"))
+    # ``proposal_row_id``, not ``proposal_id``: this is the surrogate
+    # ``proposals.id``, while ``proposals.proposal_id`` is the contract's UUID.
+    # Under one name the two are interchangeable to a reader and to the type
+    # checker — ``Approval(proposal_id=proposal.proposal_id, ...)`` would compile
+    # and fail at INSERT, in the middle of recording a human's decision.
+    proposal_row_id: Mapped[int] = mapped_column(ForeignKey("proposals.id", ondelete="CASCADE"))
     operator_id: Mapped[int] = mapped_column(ForeignKey("operators.id", ondelete="RESTRICT"))
     decision: Mapped[str] = mapped_column(String(16))
     reason: Mapped[str | None] = mapped_column(Text)
@@ -223,11 +227,14 @@ class TxAttempt(Base):
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    proposal_id: Mapped[int] = mapped_column(ForeignKey("proposals.id", ondelete="RESTRICT"))
+    proposal_row_id: Mapped[int] = mapped_column(ForeignKey("proposals.id", ondelete="RESTRICT"))
     token_jti: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("auth_tokens.jti", ondelete="RESTRICT")
     )
-    chain_id: Mapped[int] = mapped_column(Integer)
+    # 64-bit, not int32: EIP-155 chain ids aren't bounded by 2**31 (Palm is
+    # 11297108109), and an overflow here would raise on the row that records
+    # intent *before* the broadcast — the one write that must not fail.
+    chain_id: Mapped[int] = mapped_column(BigInteger)
     to_address: Mapped[str] = mapped_column(String(42))
     recipient_label: Mapped[str] = mapped_column(String(64))
     value_wei: Mapped[Decimal] = mapped_column(Wei)

@@ -55,7 +55,15 @@ uv sync
 
 Integration tests need Docker for Postgres; they skip cleanly if it is
 unavailable, or point them at an existing database with
-`HODLIN_TEST_DATABASE_URL`.
+`HODLIN_TEST_DATABASE_URL` (use the admin account — the isolation test
+provisions roles, and the migration tests create tables wherever they are
+aimed).
+
+Each domain has its own env file: `.env` for recommend, `.env.execute` for
+execute (`cp .env.execute.example .env.execute`). That split is the point rather
+than tidiness — an env file is injected into a container whole, so a shared one
+would hand the recommend process the execute domain's database credential and
+undo the per-role isolation the two databases exist to provide.
 
 ## Health
 

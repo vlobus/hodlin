@@ -16,13 +16,16 @@ has to hand the command to a thread that has no loop of its own.
 
 import asyncio
 from pathlib import Path
+from typing import Any
 
 import pytest
 from alembic import command
+from alembic.autogenerate import compare_metadata
 from alembic.config import Config
+from alembic.migration import MigrationContext
 from hodlin_execute.store.db import Base as ExecuteBase
 from hodlin_execute.store.db import create_engine
-from sqlalchemy import inspect
+from sqlalchemy import Connection, inspect
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 _EXECUTE_DIR = Path(__file__).resolve().parents[2] / "packages" / "execute"
@@ -40,6 +43,17 @@ _EXPECTED_TABLES = {
     "approvals",
     "tx_attempts",
 }
+
+
+def _only_execute_tables(
+    obj: Any, name: str | None, type_: str, reflected: bool, compare_to: Any
+) -> bool:
+    """Restrict the comparison to this domain's tables. These tests point both
+    domains' chains at one database, so everything else in it — the recommend
+    tables, both ``alembic_version*`` pointers — is out of scope by definition."""
+    if type_ == "table":
+        return name in ExecuteBase.metadata.tables
+    return True
 
 
 def _config(postgres_url: str, monkeypatch: pytest.MonkeyPatch) -> Config:
@@ -77,6 +91,38 @@ async def test_migration_creates_every_orm_table(
         assert _EXPECTED_TABLES <= tables
         assert set(ExecuteBase.metadata.tables) <= tables
         assert "uq_auth_tokens_one_live_per_proposal" in indexes
+    finally:
+        await engine.dispose()
+        await asyncio.to_thread(command.downgrade, config, "base")
+
+
+async def test_migration_does_not_drift_from_the_orm_metadata(
+    postgres_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The strong form of the check above: not "every table exists" but "the
+    database Alembic built is *indistinguishable* from ``tables.py``".
+
+    Table names surviving an upgrade is a weak signal — a column renamed on one
+    side only, or an int32 where the ORM says int64, passes it happily. Alembic's
+    own autogenerate comparison is what would produce the next revision, so an
+    empty diff is the statement that the hand-written migration and the ORM say
+    the same thing.
+    """
+    config = _config(postgres_url, monkeypatch)
+    await asyncio.to_thread(command.upgrade, config, "head")
+
+    engine: AsyncEngine = create_engine(postgres_url)
+    try:
+
+        def diff(sync: Connection) -> list[Any]:
+            context = MigrationContext.configure(
+                sync, opts={"include_object": _only_execute_tables}
+            )
+            return list(compare_metadata(context, ExecuteBase.metadata))
+
+        async with engine.connect() as conn:
+            differences = await conn.run_sync(diff)
+        assert differences == []
     finally:
         await engine.dispose()
         await asyncio.to_thread(command.downgrade, config, "base")

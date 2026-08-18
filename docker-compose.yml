@@ -19,9 +19,13 @@
 # domain's tokens and approvals, and vice versa. The POSTGRES_* values below are
 # only the admin/bootstrap account the init scripts run as.
 #
-# Integration tests still use just the db service:
+# Integration tests still use just the db service. Point them at the ADMIN
+# database, not at a domain's: the isolation test provisions roles (needs a
+# superuser), and the migration tests create both chains' tables in whatever they
+# are given — aimed at hodlin_recommend, the execute chain would deposit
+# auth_tokens and approvals inside the recommend domain's database.
 #   docker compose up -d db
-#   HODLIN_TEST_DATABASE_URL=postgresql+asyncpg://hodlin_recommend:hodlin_recommend@localhost:5432/hodlin_recommend \
+#   HODLIN_TEST_DATABASE_URL=postgresql+asyncpg://hodlin:hodlin@localhost:5432/hodlin \
 #     uv run pytest tests/integration
 services:
   db:
@@ -56,6 +60,13 @@ services:
       db:
         condition: service_healthy
     env_file:
+      # The RECOMMEND domain's file only. Compose injects every key an env_file
+      # contains, so a shared .env carrying EXECUTE_* would put the execute
+      # domain's database credential straight into this container's environment
+      # — and a compromised recommend process would read it out of os.environ,
+      # walking around the per-role database isolation below. Per-domain files
+      # are what keep "own role per domain" true at runtime (D34); the execute
+      # service added in T18 gets .env.execute and nothing else.
       - .env
     environment:
       # Reach Postgres by its compose service name, and override the loopback
