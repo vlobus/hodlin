@@ -119,7 +119,8 @@ def upgrade() -> None:
         sa.Column("reason", sa.Text(), nullable=True),
         sa.Column("token_jti", postgresql.UUID(as_uuid=True), nullable=True),
         sa.Column("decided_at", sa.DateTime(timezone=True), server_default=_NOW, nullable=False),
-        sa.ForeignKeyConstraint(["proposal_row_id"], ["proposals.id"], ondelete="CASCADE"),
+        # RESTRICT: an approval trail must not be deletable as a side effect.
+        sa.ForeignKeyConstraint(["proposal_row_id"], ["proposals.id"], ondelete="RESTRICT"),
         sa.ForeignKeyConstraint(["operator_id"], ["operators.id"], ondelete="RESTRICT"),
         sa.ForeignKeyConstraint(["token_jti"], ["auth_tokens.jti"], ondelete="SET NULL"),
     )

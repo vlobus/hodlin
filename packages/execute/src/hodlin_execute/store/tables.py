@@ -152,6 +152,23 @@ class AuthToken(Base):
     the database rather than in a code path that could be forgotten: re-approval
     must first supersede the previous token (stamping ``consumed_at``), so "I
     approved twice and got two spendable tokens" is unrepresentable.
+
+    Two consequences the index does *not* handle on its own, both landing on the
+    mint path in T13/T14:
+
+    * **"live" here means unconsumed, not unexpired.** A token that expired
+      unused still occupies the slot, because the predicate can only reference
+      immutable state — ``expires_at > now()`` isn't allowed in a partial index.
+      So minting must supersede an existing row whose ``expires_at`` has passed
+      (``consumed_reason = "expired"``) rather than insert alongside it;
+      otherwise a proposal whose token expired unused becomes permanently
+      unapprovable, with a ``UniqueViolation`` where a fresh token belongs.
+    * **The key is the hash, not the proposal id.** Two distinct proposals with
+      byte-identical canonical payloads share a slot — deliberate, since the
+      token binds to the hash and two identical proposals *are* the same
+      authorization — but that means the mint has to translate the constraint
+      violation into a domain-level refusal, not let an ``IntegrityError`` escape
+      the store.
     """
 
     __tablename__ = "auth_tokens"
@@ -194,7 +211,13 @@ class Approval(Base):
     # Under one name the two are interchangeable to a reader and to the type
     # checker — ``Approval(proposal_id=proposal.proposal_id, ...)`` would compile
     # and fail at INSERT, in the middle of recording a human's decision.
-    proposal_row_id: Mapped[int] = mapped_column(ForeignKey("proposals.id", ondelete="CASCADE"))
+    #
+    # RESTRICT, matching ``tx_attempts``: these rows are the audit trail of human
+    # decisions, refusals included, so deleting a proposal must fail loudly
+    # rather than quietly take the record of who decided what with it. CASCADE
+    # here would mean the proposals that never reached a broadcast are exactly
+    # the ones whose approvals can vanish.
+    proposal_row_id: Mapped[int] = mapped_column(ForeignKey("proposals.id", ondelete="RESTRICT"))
     operator_id: Mapped[int] = mapped_column(ForeignKey("operators.id", ondelete="RESTRICT"))
     decision: Mapped[str] = mapped_column(String(16))
     reason: Mapped[str | None] = mapped_column(Text)

@@ -42,16 +42,21 @@ $$;
 -- refuses to run in a transaction at all), so the statement is *generated* only
 -- for the databases that are missing and executed by psql's \gexec. Zero rows
 -- means zero statements: applying this file again does nothing here and falls
--- through to the grants below.
---
--- OWNED BY matters beyond tidiness: in PG15+ the `public` schema belongs to
--- pg_database_owner, so making each role its own database's owner is what
--- gives it CREATE rights for its Alembic migrations — without granting it
--- anything anywhere else.
+-- through to the ownership and grants below.
 SELECT format('CREATE DATABASE %I OWNER %I', d.name, d.name)
   FROM (VALUES ('hodlin_recommend'), ('hodlin_execute')) AS d(name)
  WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = d.name)
 \gexec
+
+-- Ownership is then asserted UNCONDITIONALLY, because the guard above skips a
+-- database that already exists — and a database pre-created by IaC or by an
+-- operator is owned by whoever created it. That is not cosmetic: in PG15+ the
+-- `public` schema belongs to pg_database_owner, so the role only has CREATE in
+-- its own database if it *owns* it. Get this wrong and CONNECT succeeds while
+-- Alembic dies with "permission denied for schema public" — provisioning that
+-- looks complete and isn't. ALTER ... OWNER TO is a no-op when already correct.
+ALTER DATABASE hodlin_recommend OWNER TO hodlin_recommend;
+ALTER DATABASE hodlin_execute OWNER TO hodlin_execute;
 
 -- Default Postgres grants CONNECT on every database to PUBLIC. Revoke it and
 -- hand it back to exactly one role each; this is the line that makes the two
@@ -62,3 +67,16 @@ REVOKE CONNECT ON DATABASE hodlin_recommend FROM PUBLIC;
 REVOKE CONNECT ON DATABASE hodlin_execute FROM PUBLIC;
 GRANT CONNECT ON DATABASE hodlin_recommend TO hodlin_recommend;
 GRANT CONNECT ON DATABASE hodlin_execute TO hodlin_execute;
+
+-- The compose bootstrap database (`hodlin`, the POSTGRES_DB the init scripts run
+-- against) keeps PUBLIC's default CONNECT unless we take it away — so either
+-- domain role can connect there, and the integration suite creates tables in it.
+-- No table grants means no data readable, but "each role reaches exactly one
+-- database" should be true without an asterisk. Generated conditionally: a
+-- cluster provisioned some other way (testcontainers names it `test`) has no
+-- such database, and a REVOKE on a missing one would abort the file.
+-- `postgres` and `template1` are deliberately left alone: they belong to the
+-- cluster, and template ACLs are copied into every future database.
+SELECT format('REVOKE CONNECT ON DATABASE %I FROM PUBLIC', 'hodlin')
+ WHERE EXISTS (SELECT 1 FROM pg_database WHERE datname = 'hodlin')
+\gexec

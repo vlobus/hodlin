@@ -19,6 +19,7 @@ restatement of it. Two consequences of taking that literally:
   and inline comments included, rather than the way that happens to work today.
 """
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -32,6 +33,10 @@ _RECOMMEND = ("hodlin_recommend", "hodlin_recommend", "hodlin_recommend")
 _EXECUTE = ("hodlin_execute", "hodlin_execute", "hodlin_execute")
 
 _GEXEC = "\\gexec"
+
+# ``$$`` and the tagged form ``$do$`` psql needs once a block nests. Matching the
+# tag (not just the delimiter) is what keeps a body's own ``$$`` from closing it.
+_DOLLAR_TAG = re.compile(r"\$[A-Za-z_][A-Za-z0-9_]*\$|\$\$")
 
 
 @dataclass(frozen=True)
@@ -49,15 +54,17 @@ def _split_statements(sql: str) -> list[_Statement]:
     The statements can't be sent as one multi-statement query: Postgres wraps
     those in an implicit transaction, and ``CREATE DATABASE`` refuses to run
     inside one. So they're split here — and the split has to survive dollar
-    quoting (``DO $$ ... $$`` contains semicolons), string literals, and inline
-    ``--`` comments (a trailing comment after a semicolon must not swallow the
-    statement it follows, which is exactly how a silently-skipped REVOKE would
-    happen). Anything left unterminated at EOF raises rather than vanishing.
+    quoting (a ``DO`` body contains semicolons, and its *tag* matters: ``$do$``
+    is what psql needs as soon as a block nests, and a ``$$`` inside such a body
+    must not end it), string literals, and inline ``--`` comments (a trailing
+    comment after a semicolon must not swallow the statement it follows, which is
+    exactly how a silently-skipped REVOKE would happen). Anything left
+    unterminated at EOF raises rather than vanishing.
     """
     statements: list[_Statement] = []
     buffer: list[str] = []
     in_string = False
-    in_dollar_quote = False
+    dollar_tag: str | None = None
     index = 0
 
     def flush(gexec: bool) -> None:
@@ -67,14 +74,16 @@ def _split_statements(sql: str) -> list[_Statement]:
             statements.append(_Statement(statement, gexec))
 
     while index < len(sql):
-        if sql.startswith("$$", index):
-            if not in_string:
-                in_dollar_quote = not in_dollar_quote
-            buffer.append("$$")
-            index += 2
-            continue
         char = sql[index]
-        if in_dollar_quote:
+        if dollar_tag is not None:
+            # Inside a dollar-quoted body only the matching tag closes it —
+            # quotes and comments in there are data.
+            opening = _DOLLAR_TAG.match(sql, index)
+            if opening is not None and opening.group() == dollar_tag:
+                buffer.append(dollar_tag)
+                index += len(dollar_tag)
+                dollar_tag = None
+                continue
             buffer.append(char)
             index += 1
             continue
@@ -83,6 +92,12 @@ def _split_statements(sql: str) -> list[_Statement]:
                 in_string = False
             buffer.append(char)
             index += 1
+            continue
+        opening = _DOLLAR_TAG.match(sql, index)
+        if opening is not None:
+            dollar_tag = opening.group()
+            buffer.append(dollar_tag)
+            index += len(dollar_tag)
             continue
         if char == "'":
             in_string = True
@@ -102,6 +117,7 @@ def _split_statements(sql: str) -> list[_Statement]:
         buffer.append(char)
         index += 1
 
+    assert dollar_tag is None, f"unterminated {dollar_tag} block in {_INIT_SQL.name}"
     leftover = "".join(buffer).strip()
     assert not leftover, f"unterminated statement in {_INIT_SQL.name}: {leftover!r}"
     return statements
@@ -186,6 +202,23 @@ def test_the_init_file_splits_into_the_statements_psql_would_run() -> None:
     assert statements[2].sql.endswith("PUBLIC;")  # comment stripped, statement kept
 
 
+def test_the_splitter_handles_tagged_dollar_quotes() -> None:
+    """The tagged form is what psql needs as soon as a block nests, so the next
+    person to edit the init file may well reach for it. Matching the *tag* is what
+    keeps a ``$$`` (or a semicolon, or a quote) inside the body from ending it —
+    otherwise the file gets sent as fragments and the security statements in it
+    quietly stop being applied."""
+    statements = _split_statements(
+        "DO $do$ BEGIN PERFORM 1; RAISE NOTICE 'a $$ b'; END $do$;\n"
+        "GRANT CONNECT ON DATABASE d TO r;\n"
+    )
+
+    assert len(statements) == 2
+    assert statements[0].sql.startswith("DO $do$") and statements[0].sql.endswith("$do$;")
+    assert "$$" in statements[0].sql  # the inner delimiter stayed inside the body
+    assert statements[1].sql.startswith("GRANT")
+
+
 async def test_each_domain_can_reach_its_own_database(provisioned: str) -> None:
     """Sanity first: the isolation must be selective, not a wall around
     everything — each role has to be able to work in its own database."""
@@ -199,6 +232,46 @@ async def test_each_domain_can_reach_its_own_database(provisioned: str) -> None:
             await conn.execute("DROP TABLE _isolation_probe")
         finally:
             await conn.close()
+
+
+async def test_a_pre_existing_database_still_ends_up_owned_by_its_role(
+    provisioned: str,
+) -> None:
+    """The realistic second application: the database already exists and was
+    created by someone else (IaC, an operator, an earlier compose life).
+
+    The `\\gexec` guard skips `CREATE DATABASE ... OWNER` for a database that
+    exists, so ownership has to be asserted separately — and ownership is not
+    cosmetic: in PG15+ `public` belongs to `pg_database_owner`, so a role that
+    doesn't own its database can CONNECT and still fail every migration with
+    "permission denied for schema public". Provisioning that looks complete and
+    isn't. Simulated by handing the database to the admin role and reapplying.
+    """
+    url = make_url(provisioned)
+    admin = await asyncpg.connect(
+        user=url.username,
+        password=url.password,
+        database=url.database,
+        host=url.host,
+        port=url.port,
+    )
+    try:
+        await admin.execute(f'ALTER DATABASE {_EXECUTE[2]} OWNER TO "{url.username}"')
+        await _apply(admin, _INIT_SQL.read_text())
+        owner = await admin.fetchval(
+            "SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = $1", _EXECUTE[2]
+        )
+        assert owner == _EXECUTE[0], f"{_EXECUTE[2]} is owned by {owner}"
+    finally:
+        await admin.close()
+
+    # The consequence, not just the catalog row: the role can create its schema.
+    conn = await _connect(provisioned, *_EXECUTE)
+    try:
+        await conn.execute("CREATE TABLE IF NOT EXISTS _ownership_probe (id int)")
+        await conn.execute("DROP TABLE _ownership_probe")
+    finally:
+        await conn.close()
 
 
 async def test_recommend_credential_cannot_connect_to_the_execute_database(

@@ -25,7 +25,7 @@ from alembic.config import Config
 from alembic.migration import MigrationContext
 from hodlin_execute.store.db import Base as ExecuteBase
 from hodlin_execute.store.db import create_engine
-from sqlalchemy import Connection, inspect
+from sqlalchemy import Connection, inspect, text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 _EXECUTE_DIR = Path(__file__).resolve().parents[2] / "packages" / "execute"
@@ -63,13 +63,33 @@ def _config(postgres_url: str, monkeypatch: pytest.MonkeyPatch) -> Config:
     return config
 
 
+async def _drop_execute_schema(postgres_url: str) -> None:
+    """Remove this chain's tables and version pointer, whatever state they're in."""
+    engine = create_engine(postgres_url)
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(ExecuteBase.metadata.drop_all, checkfirst=True)
+            await conn.execute(text("DROP TABLE IF EXISTS alembic_version_execute"))
+    finally:
+        await engine.dispose()
+
+
 def test_migration_upgrade_then_downgrade(
     postgres_url: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     config = _config(postgres_url, monkeypatch)
 
     command.upgrade(config, "head")
-    command.downgrade(config, "base")
+    try:
+        command.downgrade(config, "base")
+    finally:
+        # ``postgres_url`` is session-scoped, so a downgrade that raised halfway
+        # would leave this chain's tables behind and make the next two tests fail
+        # on DuplicateTable — hiding whatever actually broke here. A no-op after a
+        # clean downgrade; a real cleanup after a failed one. Deliberately not a
+        # retry of the failing command, which would just raise the same error over
+        # the original traceback.
+        asyncio.run(_drop_execute_schema(postgres_url))
 
 
 async def test_migration_creates_every_orm_table(
