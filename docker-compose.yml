@@ -14,7 +14,16 @@
 # Either way the anomaly notifies exactly once, so whichever you run first is
 # the one that delivers it.
 #
-# Integration tests still use just the db service:
+# The db server hosts one database per domain, each owned by its own
+# least-privileged role (T11, D34) — the recommend app can't reach the execute
+# domain's tokens and approvals, and vice versa. The POSTGRES_* values below are
+# only the admin/bootstrap account the init scripts run as.
+#
+# Integration tests still use just the db service. Point them at the ADMIN
+# database, not at a domain's: the isolation test provisions roles (needs a
+# superuser), and the migration tests create both chains' tables in whatever they
+# are given — aimed at hodlin_recommend, the execute chain would deposit
+# auth_tokens and approvals inside the recommend domain's database.
 #   docker compose up -d db
 #   HODLIN_TEST_DATABASE_URL=postgresql+asyncpg://hodlin:hodlin@localhost:5432/hodlin \
 #     uv run pytest tests/integration
@@ -38,6 +47,10 @@ services:
       # have a pre-existing hodlin_pgdata volume from the old path, reset it
       # once with `docker compose down -v`.
       - hodlin_pgdata:/var/lib/postgresql
+      # One database + one least-privileged role per domain (T11, D34). The
+      # image runs these ONLY when the data directory is empty, so an existing
+      # volume needs `docker compose down -v` to pick them up.
+      - ./docker/postgres-init:/docker-entrypoint-initdb.d:ro
 
   app:
     build:
@@ -47,12 +60,21 @@ services:
       db:
         condition: service_healthy
     env_file:
+      # The RECOMMEND domain's file only. Compose injects every key an env_file
+      # contains, so a shared .env carrying EXECUTE_* would put the execute
+      # domain's database credential straight into this container's environment
+      # — and a compromised recommend process would read it out of os.environ,
+      # walking around the per-role database isolation below. Per-domain files
+      # are what keep "own role per domain" true at runtime (D34); the execute
+      # service added in T18 gets .env.execute and nothing else.
       - .env
     environment:
       # Reach Postgres by its compose service name, and override the loopback
       # bind + provider selection for the containerised demo. These win over
-      # whatever .env carries.
-      DATABASE_URL: postgresql+asyncpg://hodlin:hodlin@db:5432/hodlin
+      # whatever .env carries. The recommend app connects as its own
+      # non-superuser role, which cannot connect to the execute database at all
+      # (D34) — that isolation is only real if this isn't the admin account.
+      DATABASE_URL: postgresql+asyncpg://hodlin_recommend:hodlin_recommend@db:5432/hodlin_recommend
       HOST: 0.0.0.0
       PORT: "8000"
       DEMO_MODE: "true"  # demo harness — drop this line to run live providers

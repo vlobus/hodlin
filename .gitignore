@@ -149,6 +149,11 @@ activemq-data/
 
 # Environments
 .env
+# Per-domain env files (.env.execute and friends) carry real credentials too;
+# only the committed *.example templates are tracked.
+.env.*
+!.env.example
+!.env.execute.example
 .envrc
 .venv
 env/

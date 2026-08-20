@@ -72,7 +72,9 @@ testpaths = ["tests"]
 addopts = "-ra"
 asyncio_mode = "auto"
 
-# Third-party packages without type stubs.
+# Third-party packages without type stubs. asyncpg is normally reached through
+# SQLAlchemy (which is typed); the isolation test drives it directly because it
+# asserts on asyncpg's own exception types, which SQLAlchemy would wrap.
 [[tool.mypy.overrides]]
-module = ["testcontainers.*", "alembic.*", "apscheduler.*"]
+module = ["testcontainers.*", "alembic.*", "apscheduler.*", "asyncpg.*"]
 ignore_missing_imports = true
