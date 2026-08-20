@@ -292,11 +292,17 @@ async def test_execute_credential_cannot_connect_to_the_recommend_database(
         await _connect(provisioned, _EXECUTE[0], _EXECUTE[1], _RECOMMEND[2])
 
 
-async def test_public_has_no_connect_privilege_on_either_database(provisioned: str) -> None:
+async def test_public_has_no_connect_privilege_on_any_of_the_databases(
+    provisioned: str,
+) -> None:
     """Postgres grants CONNECT to PUBLIC by default, which would quietly undo
     the whole arrangement for any future role — assert the revoke stuck. Because
     the fixture applied the file twice, this also asserts that a *reapplication*
-    still lands the revoke instead of aborting on the existing databases."""
+    still lands the revoke instead of aborting on the existing databases.
+
+    The bootstrap database the script runs against is included: it is where the
+    integration suite creates tables, and leaving it open to PUBLIC would make
+    "each role reaches exactly one database" true only with an asterisk."""
     url = make_url(provisioned)
     admin = await asyncpg.connect(
         user=url.username,
@@ -306,7 +312,8 @@ async def test_public_has_no_connect_privilege_on_either_database(provisioned: s
         port=url.port,
     )
     try:
-        for database in (_RECOMMEND[2], _EXECUTE[2]):
+        bootstrap = await admin.fetchval("SELECT current_database()")
+        for database in (_RECOMMEND[2], _EXECUTE[2], bootstrap):
             granted = await admin.fetchval(
                 "SELECT has_database_privilege('public', $1, 'CONNECT')", database
             )

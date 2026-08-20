@@ -68,15 +68,18 @@ REVOKE CONNECT ON DATABASE hodlin_execute FROM PUBLIC;
 GRANT CONNECT ON DATABASE hodlin_recommend TO hodlin_recommend;
 GRANT CONNECT ON DATABASE hodlin_execute TO hodlin_execute;
 
--- The compose bootstrap database (`hodlin`, the POSTGRES_DB the init scripts run
--- against) keeps PUBLIC's default CONNECT unless we take it away — so either
--- domain role can connect there, and the integration suite creates tables in it.
--- No table grants means no data readable, but "each role reaches exactly one
--- database" should be true without an asterisk. Generated conditionally: a
--- cluster provisioned some other way (testcontainers names it `test`) has no
--- such database, and a REVOKE on a missing one would abort the file.
--- `postgres` and `template1` are deliberately left alone: they belong to the
--- cluster, and template ACLs are copied into every future database.
-SELECT format('REVOKE CONNECT ON DATABASE %I FROM PUBLIC', 'hodlin')
- WHERE EXISTS (SELECT 1 FROM pg_database WHERE datname = 'hodlin')
+-- The bootstrap database this script is running against (compose's POSTGRES_DB)
+-- keeps PUBLIC's default CONNECT unless we take it away — so either domain role
+-- can connect there, and the integration suite creates tables in it. No table
+-- grants means no data readable, but "each role reaches exactly one database"
+-- should be true without an asterisk.
+--
+-- `current_database()` rather than a hardcoded name: the name is deployment
+-- configuration (rename POSTGRES_DB, or run this from a differently-named
+-- cluster such as testcontainers' `test`), and a name-matched guard would
+-- silently no-op there — failing open, the exact direction this file exists to
+-- avoid. By definition the database we are connected to exists, so this needs
+-- no guard at all. `postgres` and `template1` are deliberately left alone: they
+-- belong to the cluster, and template ACLs are copied into every future database.
+SELECT format('REVOKE CONNECT ON DATABASE %I FROM PUBLIC', current_database())
 \gexec
