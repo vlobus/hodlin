@@ -1,8 +1,13 @@
-"""T2 contract guarantees: the Proposal/EvidenceRef shape and the canonical hash.
+"""T2 contract guarantees: the proposal/evidence shape and the canonical hash.
 
 These tests pin the properties the rest of the system leans on — immutability,
 exact money, tz-aware time, traceable evidence, and a content hash that depends
 on meaning rather than field order.
+
+Since T12 there are two proposal versions, so every guarantee that is *not*
+version-specific runs against **both** of them: a new version must not quietly
+drop an invariant the old one had. What 1.1 adds, and how the two versions relate,
+lives in ``test_contracts_versioning.py``.
 """
 
 from datetime import UTC, datetime, timedelta, timezone
@@ -13,11 +18,17 @@ import pytest
 from hodlin_contracts import (
     SCHEMA_VERSION,
     EvidenceRef,
-    Proposal,
+    ProposalV1_0,
+    ProposalV1_1,
     canonical_hash,
     canonical_json,
 )
 from pydantic import ValidationError
+
+type ProposalModel = type[ProposalV1_0] | type[ProposalV1_1]
+
+#: Both versions, for the invariants neither may lose.
+BOTH_VERSIONS = pytest.mark.parametrize("model", [ProposalV1_0, ProposalV1_1], ids=["1.0", "1.1"])
 
 
 def _evidence(**overrides: object) -> EvidenceRef:
@@ -31,7 +42,9 @@ def _evidence(**overrides: object) -> EvidenceRef:
     return EvidenceRef(**base)  # type: ignore[arg-type]
 
 
-def _proposal(**overrides: object) -> Proposal:
+def _proposal(
+    model: ProposalModel = ProposalV1_1, **overrides: object
+) -> ProposalV1_0 | ProposalV1_1:
     base: dict[str, object] = {
         "proposal_id": uuid4(),
         "asset": "BTC",
@@ -43,65 +56,82 @@ def _proposal(**overrides: object) -> Proposal:
         "created_at": datetime(2026, 6, 28, 12, 5, tzinfo=UTC),
     }
     base.update(overrides)
-    return Proposal(**base)  # type: ignore[arg-type]
+    return model(**base)  # type: ignore[arg-type]
 
 
-def test_valid_proposal_round_trips() -> None:
-    proposal = _proposal()
-    assert proposal.schema_version == SCHEMA_VERSION == "1.0"
+@BOTH_VERSIONS
+def test_valid_proposal_round_trips(model: ProposalModel) -> None:
+    proposal = _proposal(model)
     assert proposal.amount == Decimal("0.5")
 
 
-def test_proposal_is_frozen() -> None:
-    proposal = _proposal()
+def test_the_current_version_is_what_gets_produced() -> None:
+    assert SCHEMA_VERSION == "1.1"
+    assert _proposal(ProposalV1_1).schema_version == SCHEMA_VERSION
+    assert _proposal(ProposalV1_0).schema_version == "1.0"
+
+
+@BOTH_VERSIONS
+def test_proposal_is_frozen(model: ProposalModel) -> None:
+    proposal = _proposal(
+        model,
+    )
     with pytest.raises(ValidationError):
         proposal.asset = "ETH"
 
 
-def test_unknown_fields_rejected() -> None:
+@BOTH_VERSIONS
+def test_unknown_fields_rejected(model: ProposalModel) -> None:
     with pytest.raises(ValidationError):
-        _proposal(destination_address="0xdeadbeef")
+        _proposal(model, destination_address="0xdeadbeef")
 
 
-def test_money_rejects_float() -> None:
+@BOTH_VERSIONS
+def test_money_rejects_float(model: ProposalModel) -> None:
     with pytest.raises(ValidationError):
-        _proposal(amount=0.5)
+        _proposal(model, amount=0.5)
 
 
-def test_money_accepts_string_exactly() -> None:
-    proposal = _proposal(amount="0.1")
+@BOTH_VERSIONS
+def test_money_accepts_string_exactly(model: ProposalModel) -> None:
+    proposal = _proposal(model, amount="0.1")
     assert proposal.amount == Decimal("0.1")
 
 
-def test_negative_amount_rejected() -> None:
+@BOTH_VERSIONS
+def test_negative_amount_rejected(model: ProposalModel) -> None:
     with pytest.raises(ValidationError):
-        _proposal(amount=Decimal("-1"))
+        _proposal(model, amount=Decimal("-1"))
 
 
-def test_naive_datetime_rejected() -> None:
+@BOTH_VERSIONS
+def test_naive_datetime_rejected(model: ProposalModel) -> None:
     with pytest.raises(ValidationError):
-        _proposal(created_at=datetime(2026, 6, 28, 12, 5))
+        _proposal(model, created_at=datetime(2026, 6, 28, 12, 5))
 
 
-def test_at_least_one_evidence_required() -> None:
+@BOTH_VERSIONS
+def test_at_least_one_evidence_required(model: ProposalModel) -> None:
     with pytest.raises(ValidationError):
-        _proposal(evidence=())
+        _proposal(model, evidence=())
 
 
-def test_empty_required_strings_rejected() -> None:
+@BOTH_VERSIONS
+def test_empty_required_strings_rejected(model: ProposalModel) -> None:
     with pytest.raises(ValidationError):
-        _proposal(asset="")
+        _proposal(model, asset="")
     with pytest.raises(ValidationError):
-        _proposal(recipient_label="")
+        _proposal(model, recipient_label="")
 
 
-def test_canonical_hash_stable_across_construction_order() -> None:
+@BOTH_VERSIONS
+def test_canonical_hash_stable_across_construction_order(model: ProposalModel) -> None:
     pid = uuid4()
     ts = datetime(2026, 6, 28, 12, 5, tzinfo=UTC)
     ev = _evidence()
-    first = _proposal(proposal_id=pid, created_at=ts, evidence=(ev,))
+    first = _proposal(model, proposal_id=pid, created_at=ts, evidence=(ev,))
     # Same meaning, fields supplied in a different order at construction.
-    second = Proposal(
+    second = model(
         created_at=ts,
         evidence=(ev,),
         reasoning="anomalous volume spike",
@@ -114,60 +144,66 @@ def test_canonical_hash_stable_across_construction_order() -> None:
     assert canonical_hash(first) == canonical_hash(second)
 
 
-def test_canonical_hash_changes_with_meaning() -> None:
+@BOTH_VERSIONS
+def test_canonical_hash_changes_with_meaning(model: ProposalModel) -> None:
     pid = uuid4()
     ts = datetime(2026, 6, 28, 12, 5, tzinfo=UTC)
-    a = _proposal(proposal_id=pid, created_at=ts, amount=Decimal("0.5"))
-    b = _proposal(proposal_id=pid, created_at=ts, amount=Decimal("0.6"))
+    a = _proposal(model, proposal_id=pid, created_at=ts, amount=Decimal("0.5"))
+    b = _proposal(model, proposal_id=pid, created_at=ts, amount=Decimal("0.6"))
     assert canonical_hash(a) != canonical_hash(b)
 
 
-def test_canonical_hash_ignores_decimal_scale() -> None:
+@BOTH_VERSIONS
+def test_canonical_hash_ignores_decimal_scale(model: ProposalModel) -> None:
     # 0.5 and 0.50 are equal in meaning; their proposals must hash identically.
     pid = uuid4()
     ts = datetime(2026, 6, 28, 12, 5, tzinfo=UTC)
-    a = _proposal(proposal_id=pid, created_at=ts, amount=Decimal("0.5"))
-    b = _proposal(proposal_id=pid, created_at=ts, amount="0.50")
+    a = _proposal(model, proposal_id=pid, created_at=ts, amount=Decimal("0.5"))
+    b = _proposal(model, proposal_id=pid, created_at=ts, amount="0.50")
     assert a == b
     assert canonical_hash(a) == canonical_hash(b)
 
 
-def test_canonical_hash_ignores_whole_number_scale() -> None:
+@BOTH_VERSIONS
+def test_canonical_hash_ignores_whole_number_scale(model: ProposalModel) -> None:
     # Whole amounts must not leak scientific notation ("1E+2") into the hash.
     pid = uuid4()
     ts = datetime(2026, 6, 28, 12, 5, tzinfo=UTC)
-    a = _proposal(proposal_id=pid, created_at=ts, amount=Decimal("100"))
-    b = _proposal(proposal_id=pid, created_at=ts, amount="100.00")
+    a = _proposal(model, proposal_id=pid, created_at=ts, amount=Decimal("100"))
+    b = _proposal(model, proposal_id=pid, created_at=ts, amount="100.00")
     assert canonical_hash(a) == canonical_hash(b)
     assert "E" not in canonical_json(a)
 
 
-def test_large_whole_amount_normalizes_without_crash() -> None:
+@BOTH_VERSIONS
+def test_large_whole_amount_normalizes_without_crash(model: ProposalModel) -> None:
     # Digit count beyond the default decimal precision must not raise, and
     # must stay plain (no scientific notation) in the canonical form.
     pid = uuid4()
     ts = datetime(2026, 6, 28, 12, 5, tzinfo=UTC)
-    a = _proposal(proposal_id=pid, created_at=ts, amount="1E+30")
-    b = _proposal(proposal_id=pid, created_at=ts, amount="1" + "0" * 30)
+    a = _proposal(model, proposal_id=pid, created_at=ts, amount="1E+30")
+    b = _proposal(model, proposal_id=pid, created_at=ts, amount="1" + "0" * 30)
     assert canonical_hash(a) == canonical_hash(b)
     assert "E" not in canonical_json(a)
 
 
-def test_negative_zero_hashes_as_zero() -> None:
+@BOTH_VERSIONS
+def test_negative_zero_hashes_as_zero(model: ProposalModel) -> None:
     pid = uuid4()
     ts = datetime(2026, 6, 28, 12, 5, tzinfo=UTC)
-    a = _proposal(proposal_id=pid, created_at=ts, amount=Decimal("-0"))
-    b = _proposal(proposal_id=pid, created_at=ts, amount=Decimal("0"))
+    a = _proposal(model, proposal_id=pid, created_at=ts, amount=Decimal("-0"))
+    b = _proposal(model, proposal_id=pid, created_at=ts, amount=Decimal("0"))
     assert canonical_hash(a) == canonical_hash(b)
 
 
-def test_canonical_hash_ignores_timezone_offset() -> None:
+@BOTH_VERSIONS
+def test_canonical_hash_ignores_timezone_offset(model: ProposalModel) -> None:
     # The same instant in two timezones must hash identically.
     pid = uuid4()
     utc_ts = datetime(2026, 6, 28, 12, 5, tzinfo=UTC)
     offset_ts = datetime(2026, 6, 28, 13, 5, tzinfo=timezone(timedelta(hours=1)))
-    a = _proposal(proposal_id=pid, created_at=utc_ts)
-    b = _proposal(proposal_id=pid, created_at=offset_ts)
+    a = _proposal(model, proposal_id=pid, created_at=utc_ts)
+    b = _proposal(model, proposal_id=pid, created_at=offset_ts)
     assert a == b
     assert canonical_hash(a) == canonical_hash(b)
 
