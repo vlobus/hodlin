@@ -27,7 +27,7 @@ is not the same act as accepting a new one. Expiry is a decision for the gate
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Annotated, Literal, Self
+from typing import Annotated, Literal, Protocol, Self, cast, runtime_checkable
 from uuid import UUID
 
 from pydantic import (
@@ -99,7 +99,18 @@ class _Frozen(BaseModel):
 class EvidenceRef(_Frozen):
     """A single citable source behind a proposal — a news item, a price
     anomaly, or a sentiment score. At least one is required on every
-    proposal so a recommendation can always be traced back to what it saw."""
+    proposal so a recommendation can always be traced back to what it saw.
+
+    **Shared across proposal versions, and therefore inside every version's
+    freeze.** That is a real asymmetry with ``ActionV1_0``/``ActionV1_1``, so it
+    needs saying: widening ``kind`` here would widen what a *frozen 1.0* document
+    is allowed to say, without bumping 1.0. Existing digests would still
+    reproduce, which is exactly what makes it easy to miss. It stays shared
+    because the shape is genuinely identical across versions and duplicating it
+    would invite the two copies to drift — but the allowed ``kind`` values are
+    pinned by a test, so adding one is a deliberate act that forces the
+    "does this need a new proposal version?" conversation instead of sliding by.
+    """
 
     kind: Literal["anomaly", "news", "sentiment", "price"]
     source: str = Field(min_length=1)
@@ -154,6 +165,20 @@ class ProposalV1_1(_Frozen):
     valid_until: UtcDatetime | None = None
 
     @model_validator(mode="after")
+    def _value_moving_actions_need_an_amount(self) -> Self:
+        """``ge=0`` is right for ``hold``/``alert``, which carry no amount — but a
+        zero-amount ``transfer`` (or buy, or sell) is not something any human would
+        approve: it burns gas to do nothing, and it's the shape a prompt-injected
+        recommend domain emits when it's flailing. 1.1 is where the value-moving
+        action arrives, so it's where the floor belongs. 1.0 keeps its old rules
+        untouched — tightening validation on a frozen version could make a stored
+        proposal unparseable, which is the mutation D32 forbids in another guise.
+        """
+        if self.action in ("buy", "sell", "transfer") and self.amount == 0:
+            raise ValueError(f"{self.action} requires an amount greater than zero")
+        return self
+
+    @model_validator(mode="after")
     def _valid_until_after_created_at(self) -> Self:
         """A deadline at or before the moment of creation is self-contradictory —
         the proposal was never actionable. Rejecting it here is safe precisely
@@ -188,7 +213,23 @@ def parse_proposal(payload: Mapping[str, object]) -> ProposalV1_0 | ProposalV1_1
     return _PROPOSAL_ADAPTER.validate_python(payload)
 
 
-def is_expired(proposal: ProposalV1_0 | ProposalV1_1, at: datetime) -> bool:
+@runtime_checkable
+class ProposalLike(Protocol):
+    """Structural view of "some version of a proposal".
+
+    Exists so version-spanning helpers don't have to enumerate classes. An
+    enumeration is the wrong shape for a module whose whole thesis is that new
+    shapes arrive as new classes: the compiler is perfectly happy when a widened
+    union reaches an ``isinstance`` chain that silently stops matching, and on
+    this path "no match" would mean *not expired* — failing open, on the money
+    side, for a version that plainly stated a deadline.
+    """
+
+    @property
+    def schema_version(self) -> str: ...
+
+
+def is_expired(proposal: ProposalLike, at: datetime) -> bool:
     """Whether the proposal states a deadline that ``at`` has passed.
 
     Freshness is asked as a question, not enforced at parse time (see the module
@@ -196,9 +237,14 @@ def is_expired(proposal: ProposalV1_0 | ProposalV1_1, at: datetime) -> bool:
     accord* — which is not a loophole: the gate's other bounds (a short-lived,
     single-use token) still apply, and they're what make a 1.0 approval
     non-replayable.
+
+    The deadline is read *structurally*, not by matching known classes, so a
+    future version that carries ``valid_until`` is honoured the moment it exists
+    rather than the moment someone remembers to extend this function. Opting in
+    by accident is fine here; opting out by accident is a stale proposal that the
+    gate believes it checked.
     """
     if at.tzinfo is None:
         raise ValueError("`at` must be timezone-aware to compare against valid_until")
-    if isinstance(proposal, ProposalV1_1) and proposal.valid_until is not None:
-        return at > proposal.valid_until
-    return False
+    deadline = cast("datetime | None", getattr(proposal, "valid_until", None))
+    return deadline is not None and at > deadline

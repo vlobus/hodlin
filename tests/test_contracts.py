@@ -189,10 +189,13 @@ def test_large_whole_amount_normalizes_without_crash(model: ProposalModel) -> No
 
 @BOTH_VERSIONS
 def test_negative_zero_hashes_as_zero(model: ProposalModel) -> None:
+    # ``hold`` rather than the default ``buy``: from 1.1 on, an action that moves
+    # value requires a non-zero amount, and the property under test here is the
+    # canonicalization of signed zero — not the business rule.
     pid = uuid4()
     ts = datetime(2026, 6, 28, 12, 5, tzinfo=UTC)
-    a = _proposal(model, proposal_id=pid, created_at=ts, amount=Decimal("-0"))
-    b = _proposal(model, proposal_id=pid, created_at=ts, amount=Decimal("0"))
+    a = _proposal(model, proposal_id=pid, created_at=ts, action="hold", amount=Decimal("-0"))
+    b = _proposal(model, proposal_id=pid, created_at=ts, action="hold", amount=Decimal("0"))
     assert canonical_hash(a) == canonical_hash(b)
 
 
