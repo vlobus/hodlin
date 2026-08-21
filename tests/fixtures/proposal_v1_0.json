@@ -1,0 +1,18 @@
+{
+  "reasoning": "BTC-USD fell 6.2% in one hour, 4.1 sigma against the 30-day rolling window",
+  "created_at": "2026-06-28T13:05:00+01:00",
+  "schema_version": "1.0",
+  "recipient_label": "cold-wallet",
+  "asset": "BTC",
+  "amount": "0.50",
+  "action": "buy",
+  "proposal_id": "6f1e9c74-2f1b-4d5e-8a3c-9b0d7e5f4a21",
+  "evidence": [
+    {
+      "observed_at": "2026-06-28T12:00:00+00:00",
+      "kind": "anomaly",
+      "source": "hodlin",
+      "ref": "BTC-USD@2026-06-28T12:00:00Z"
+    }
+  ]
+}
