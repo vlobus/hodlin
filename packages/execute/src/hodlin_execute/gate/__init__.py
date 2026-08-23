@@ -6,6 +6,18 @@ audit into one unit of work. Expiry and single-use are deliberately separate
 mechanisms in separate modules, because they are separate properties (D15).
 """
 
+from hodlin_execute.gate.replay_store import (
+    Consumed,
+    ConsumedReason,
+    ConsumeRejected,
+    ConsumeRejection,
+    ConsumeResult,
+    Registered,
+    RegisterRejected,
+    RegisterRejection,
+    RegisterResult,
+    ReplayStore,
+)
 from hodlin_execute.gate.token import (
     CLOCK_SKEW,
     MAX_TOKEN_TTL,
@@ -27,8 +39,18 @@ __all__ = [
     "MIN_SECRET_BYTES",
     "TOKEN_SCHEME",
     "Binding",
+    "ConsumeRejected",
+    "ConsumeRejection",
+    "ConsumeResult",
+    "Consumed",
+    "ConsumedReason",
+    "RegisterRejected",
+    "RegisterRejection",
+    "RegisterResult",
+    "Registered",
     "Rejected",
     "Rejection",
+    "ReplayStore",
     "TokenClaims",
     "Verified",
     "VerifyResult",
