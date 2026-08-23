@@ -57,3 +57,32 @@ async def session(engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
     factory = create_session_factory(engine)
     async with factory() as sess:
         yield sess
+
+
+@pytest.fixture
+async def execute_engine(postgres_url: str) -> AsyncIterator[AsyncEngine]:
+    """A real Postgres carrying the *execute* domain's schema.
+
+    Separate from the ``engine`` fixture above rather than parameterised over it:
+    the two domains own separate metadata precisely so neither can create the
+    other's tables (D34), and a shared fixture would quietly undo that in tests.
+    """
+    from hodlin_execute.store.db import Base as ExecuteBase
+    from hodlin_execute.store.db import create_engine as create_execute_engine
+
+    eng = create_execute_engine(postgres_url)
+    async with eng.begin() as conn:
+        await conn.run_sync(ExecuteBase.metadata.create_all)
+    yield eng
+    async with eng.begin() as conn:
+        await conn.run_sync(ExecuteBase.metadata.drop_all)
+    await eng.dispose()
+
+
+@pytest.fixture
+async def execute_session(execute_engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
+    from hodlin_execute.store.db import create_session_factory as execute_session_factory
+
+    factory = execute_session_factory(execute_engine)
+    async with factory() as sess:
+        yield sess
