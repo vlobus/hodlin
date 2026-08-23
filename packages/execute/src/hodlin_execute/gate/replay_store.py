@@ -56,11 +56,18 @@ class ConsumedReason(StrEnum):
 class RegisterRejection(StrEnum):
     LIVE_TOKEN_EXISTS = "live_token_exists"
     DUPLICATE_JTI = "duplicate_jti"
+    UNKNOWN_OPERATOR = "unknown_operator"
+    ALREADY_EXPIRED = "already_expired"
 
 
 class ConsumeRejection(StrEnum):
     UNKNOWN_JTI = "unknown_jti"
+    #: Spent — the replay case, and the only one that suggests an attack.
     ALREADY_CONSUMED = "already_consumed"
+    #: Retired by a later approval of the same proposal. Ordinary operation: a
+    #: human clicking a stale approval link should not read as a replay attempt,
+    #: because that difference is what decides whether anyone investigates.
+    SUPERSEDED = "superseded"
     EXPIRED = "expired"
 
 
@@ -98,7 +105,7 @@ class ReplayStore:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def register(self, claims: TokenClaims, *, operator_id: int) -> RegisterResult:
+    async def register(self, claims: TokenClaims, *, now: datetime) -> RegisterResult:
         """Record a freshly minted token so it can be consumed later.
 
         The row is the token's only existence as far as this domain is concerned:
@@ -106,12 +113,39 @@ class ReplayStore:
         is therefore unusable — which is the property that makes a leaked secret
         insufficient to spend anything on its own.
 
+        **Attribution is resolved from the claims, not accepted as an argument.**
+        ``token.py`` puts ``subject`` inside the MAC on the grounds that "an audit
+        trail that can be edited by the caller is not an audit trail" — and an
+        ``operator_id`` parameter would have handed that same editing power back,
+        one layer down. ``Consumed.operator_id`` is what T17 attributes a transfer
+        to, so a caller mixing up the acting and approving operator would move
+        money against the wrong human with nothing to detect it. Looking the
+        operator up by the MAC-protected subject makes that unrepresentable rather
+        than merely discouraged.
+
         The insert is wrapped in a SAVEPOINT so a constraint violation can be
         turned into a value without discarding the caller's transaction. T16
         registers a token in the middle of a larger unit of work (authorize →
         mint → audit), and losing the audit row because the mint collided would be
         the wrong trade.
         """
+        if now.tzinfo is None:
+            raise ValueError("`now` must be timezone-aware")
+        # A token that is already dead on arrival would still occupy the one live
+        # slot for its proposal — unconsumable, and blocking every later approval
+        # until someone thought to supersede it. A backdated ``expires_at`` is a
+        # clock or TTL bug upstream, so it gets refused here rather than stored.
+        if claims.expires_at <= now:
+            return RegisterRejected(RegisterRejection.ALREADY_EXPIRED)
+
+        operator_id = (
+            await self._session.execute(
+                select(tables.Operator.id).where(tables.Operator.subject == claims.subject)
+            )
+        ).scalar_one_or_none()
+        if operator_id is None:
+            return RegisterRejected(RegisterRejection.UNKNOWN_OPERATOR)
+
         row = tables.AuthToken(
             jti=claims.jti,
             proposal_hash=claims.proposal_hash,
@@ -205,30 +239,60 @@ class ReplayStore:
         refusal into permission. It exists so the audit trail says "replayed"
         rather than "no", because those call for different human reactions.
         """
-        stmt = select(tables.AuthToken.consumed_at, tables.AuthToken.expires_at).where(
-            tables.AuthToken.jti == jti
-        )
+        stmt = select(
+            tables.AuthToken.consumed_at,
+            tables.AuthToken.consumed_reason,
+            tables.AuthToken.expires_at,
+        ).where(tables.AuthToken.jti == jti)
         row = (await self._session.execute(stmt)).one_or_none()
         if row is None:
             return ConsumeRejection.UNKNOWN_JTI
         if row.consumed_at is not None:
+            # Why it stopped being live decides whether a human should care. A
+            # token retired by a later approval is someone clicking a stale link;
+            # a spent one presented again is the replay this module exists to
+            # stop. Reporting both as "already consumed" would send an operator
+            # hunting for an attack that never happened.
+            if row.consumed_reason == ConsumedReason.SUPERSEDED:
+                return ConsumeRejection.SUPERSEDED
+            if row.consumed_reason == ConsumedReason.EXPIRED:
+                return ConsumeRejection.EXPIRED
             return ConsumeRejection.ALREADY_CONSUMED
         if row.expires_at <= now:
             return ConsumeRejection.EXPIRED
-        # The row is live now, so the CAS lost to a concurrent consumer that has
-        # since been rolled back. "Already consumed" is the honest report: at the
-        # moment we asked, someone else held the claim.
-        return ConsumeRejection.ALREADY_CONSUMED
+        # Live now, yet the CAS matched nothing — so the row did not exist when we
+        # tried to claim it and was committed by a concurrent ``register`` in
+        # between. (Not "lost a race to a consumer that rolled back": that case
+        # makes the CAS *succeed*, which is what the rollback test demonstrates.)
+        # At the moment of the claim there was nothing to claim.
+        return ConsumeRejection.UNKNOWN_JTI
+
+
+#: The constraints this module knows how to explain. Anything else is a bug, not
+#: an outcome — see ``_classify_integrity_error``.
+_KNOWN_CONSTRAINTS = {
+    "uq_auth_tokens_one_live_per_proposal": RegisterRejection.LIVE_TOKEN_EXISTS,
+    "auth_tokens_pkey": RegisterRejection.DUPLICATE_JTI,
+}
 
 
 def _classify_integrity_error(exc: IntegrityError) -> RegisterRejection:
-    """Which constraint said no — the primary key or the one-live-token index.
+    """Turn a *known* constraint violation into a value, and re-raise the rest.
 
-    Matching on the constraint name rather than the message text: the name is part
-    of the schema this repo owns (and is asserted by the migration tests), whereas
-    the message is Postgres's to reword.
+    A catch-all ``else`` was the bug here. ``jti`` is a fresh uuid4, so a real
+    primary-key collision is effectively impossible — which means that in
+    production a reported ``DUPLICATE_JTI`` would almost always be something else
+    entirely (a missing operator row, a NOT NULL violation, a constraint added
+    next year) quietly relabelled. T16 would then write a plausible "duplicate
+    jti" into the approval trail for what is actually a referential-integrity bug
+    on the money path, and nothing would ever surface it.
+
+    Matching on the constraint *name* rather than the message text: the name is
+    part of the schema this repo owns and the migration tests assert, whereas the
+    message is Postgres's to reword between versions.
     """
     constraint = getattr(getattr(exc.orig, "__cause__", None), "constraint_name", None)
-    if constraint == "uq_auth_tokens_one_live_per_proposal":
-        return RegisterRejection.LIVE_TOKEN_EXISTS
-    return RegisterRejection.DUPLICATE_JTI
+    known = _KNOWN_CONSTRAINTS.get(constraint) if isinstance(constraint, str) else None
+    if known is None:
+        raise exc
+    return known
