@@ -8,6 +8,7 @@ mechanisms in separate modules, because they are separate properties (D15).
 
 from hodlin_execute.gate.token import (
     CLOCK_SKEW,
+    MAX_TOKEN_TTL,
     MIN_SECRET_BYTES,
     TOKEN_SCHEME,
     Binding,
@@ -22,6 +23,7 @@ from hodlin_execute.gate.token import (
 
 __all__ = [
     "CLOCK_SKEW",
+    "MAX_TOKEN_TTL",
     "MIN_SECRET_BYTES",
     "TOKEN_SCHEME",
     "Binding",

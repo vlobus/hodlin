@@ -103,6 +103,49 @@ class TestTokenSecret:
         assert _SECRET not in str(settings)
         assert _SECRET not in str(settings.model_dump())
 
+    def test_the_committed_placeholder_is_refused(self) -> None:
+        """The finding that mattered most in review: the template's placeholder was
+        37 characters, so it passed the length floor and produced a *working*
+        system — with an HMAC key published in a public repository.
+
+        Every other placeholder in this repo fails on first use because a remote
+        service rejects it. This one has no remote service to refuse it, so the
+        refusal has to live here, and a length floor alone can't do it: a
+        memorable sentence is easily long enough.
+        """
+        placeholder = (Path(__file__).resolve().parents[1] / ".env.execute.example").read_text()
+        committed = next(
+            line.split("=", 1)[1]
+            for line in placeholder.splitlines()
+            if line.startswith("EXECUTE_TOKEN_SECRET=")
+        )
+
+        with pytest.raises(ValidationError):
+            Settings(_env_file=None, database_url=_URL, token_secret=SecretStr(committed))  # type: ignore[call-arg]
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "change-me-at-least-32-characters-long",
+            "your-token-secret-goes-right-here-ok",
+            "placeholder-placeholder-placeholder",
+            "example-secret-for-local-development",
+        ],
+    )
+    def test_other_long_placeholders_are_refused_too(self, value: str) -> None:
+        """Not just the exact committed string: the shapes a developer types when
+        they mean "I'll do this later" are all long enough to pass a length check."""
+        with pytest.raises(ValidationError, match="placeholder"):
+            Settings(_env_file=None, database_url=_URL, token_secret=SecretStr(value))  # type: ignore[call-arg]
+
+    def test_a_generated_secret_is_accepted(self) -> None:
+        """The check must not be so eager that a real key trips it."""
+        generated = "8Kv2mQ7pR4tZ9wX1cB6nH3jL5dF0sA2yE7uI4oP8kM1"
+
+        settings = Settings(_env_file=None, database_url=_URL, token_secret=SecretStr(generated))  # type: ignore[call-arg]
+
+        assert settings.token_secret_bytes == generated.encode("utf-8")
+
     def test_bytes_conversion_happens_in_one_place(self) -> None:
         """So no call site has to decide an encoding for a key."""
         settings = Settings(_env_file=None, database_url=_URL, token_secret=SecretStr(_SECRET))  # type: ignore[call-arg]

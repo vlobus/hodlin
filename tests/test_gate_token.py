@@ -15,6 +15,7 @@ Two properties of the suite itself are deliberate:
   hour and in any timezone.
 """
 
+import base64
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any, ClassVar
@@ -24,6 +25,7 @@ import pytest
 from hodlin_contracts import canonical_bytes
 from hodlin_execute.gate.token import (
     CLOCK_SKEW,
+    MAX_TOKEN_TTL,
     MIN_SECRET_BYTES,
     TOKEN_SCHEME,
     Binding,
@@ -31,6 +33,7 @@ from hodlin_execute.gate.token import (
     Rejection,
     TokenClaims,
     Verified,
+    _mac,
     mint,
     verify,
 )
@@ -265,8 +268,6 @@ class TestMalformed:
         """Signed with our own key, yet not a shape we accept: either our minting
         is broken or the secret leaked. Either way it is not a usable approval, and
         the reason distinguishes it from a forgery."""
-        from hodlin_execute.gate.token import _mac
-
         payload = b'{"proposal_hash":"deadbeef"}'
         signature = _mac(TOKEN_SCHEME, payload, _SECRET)
 
@@ -274,6 +275,133 @@ class TestMalformed:
 
         assert isinstance(result, Rejected)
         assert result.reason is Rejection.CLAIMS_INVALID
+
+
+class TestOneSpellingPerToken:
+    """An authentic token must have exactly one string form.
+
+    Nothing today keys on the token string — T14 dedupes on ``jti`` — so these
+    are guards on a *future* mistake: a replay cache, an idempotency key, or a
+    log-based duplicate detector built on the string would be bypassable by
+    changing one character if several spellings decoded alike.
+    """
+
+    def test_a_re_encoded_signature_variant_is_refused(self) -> None:
+        """Several final base64 characters decode to identical bytes, because the
+        last character carries unused trailing bits. ``validate=True`` does not
+        catch it; re-encoding does."""
+        scheme, payload, signature = mint(_claims(), secret=_SECRET).split(".")
+        alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+
+        variants = [
+            f"{scheme}.{payload}.{signature[:-1]}{char}"
+            for char in alphabet
+            if char != signature[-1]
+            and _b64u(_b64u_decode_lax(f"{signature[:-1]}{char}")) == signature
+        ]
+
+        assert variants, "expected at least one alternative spelling to exist"
+        for variant in variants:
+            assert _verify(variant) == Rejected(
+                Rejection.MALFORMED, "payload or signature is not canonical base64url"
+            )
+
+    def test_the_standard_base64_alphabet_is_refused(self) -> None:
+        """``b64decode`` translates altchars *before* validating, so ``+``/``/``
+        would otherwise sail through as though they were ``-``/``_``."""
+        scheme, payload, signature = mint(_claims(), secret=_SECRET).split(".")
+        if "-" not in signature and "_" not in signature:
+            pytest.skip("this signature happens to contain no urlsafe-specific characters")
+
+        standard = signature.replace("-", "+").replace("_", "/")
+
+        assert isinstance(_verify(f"{scheme}.{payload}.{standard}"), Rejected)
+
+    def test_explicit_padding_is_refused(self) -> None:
+        """One spelling means one spelling: the padded form of the same bytes is a
+        different string and must not verify."""
+        scheme, payload, signature = mint(_claims(), secret=_SECRET).split(".")
+
+        assert isinstance(_verify(f"{scheme}.{payload}.{signature}=="), Rejected)
+
+
+class TestMaxTtl:
+    """ "Short-lived" has to be enforced somewhere, or it is only a comment."""
+
+    def test_minting_an_overlong_window_raises(self) -> None:
+        """``timedelta(days=5)`` where ``minutes=5`` was meant is our own bug, so
+        it fails loudly at the point of the mistake."""
+        with pytest.raises(ValueError, match="MAX_TOKEN_TTL"):
+            mint(
+                _claims(expires_at=_ISSUED_AT + MAX_TOKEN_TTL + timedelta(seconds=1)),
+                secret=_SECRET,
+            )
+
+    def test_verifying_an_authentic_overlong_token_is_refused(self) -> None:
+        """The same check at the other end, because an authentic token with an
+        absurd window is what a compromised minter emits — and then "short-lived"
+        needs to be a property of the gate, not of whoever called mint."""
+        overlong = _claims(expires_at=_ISSUED_AT + MAX_TOKEN_TTL + timedelta(hours=1))
+        payload = canonical_bytes(overlong)
+        forged = f"{TOKEN_SCHEME}.{_b64u(payload)}.{_b64u(_mac_for_test(payload))}"
+
+        assert _verify(forged) == Rejected(Rejection.WINDOW_TOO_LONG)
+
+    def test_a_window_at_the_ceiling_is_allowed(self) -> None:
+        token = mint(_claims(expires_at=_ISSUED_AT + MAX_TOKEN_TTL), secret=_SECRET)
+
+        assert isinstance(_verify(token), Verified)
+
+
+class TestBindingValidation:
+    """A caller's bug must not be recorded as a token mismatch."""
+
+    def test_a_float_amount_is_refused(self) -> None:
+        """``0.1 != Decimal("0.1")``, so this would have produced a plausible
+        AMOUNT_MISMATCH audit row instead of a programming error."""
+        with pytest.raises(ValidationError):
+            Binding(proposal_hash=_PROPOSAL_HASH, amount=0.1, recipient_label="cold-wallet")  # type: ignore[arg-type]
+
+    def test_a_non_canonical_digest_is_refused(self) -> None:
+        with pytest.raises(ValidationError):
+            Binding(
+                proposal_hash=_PROPOSAL_HASH.upper(),
+                amount=Decimal("0.25"),
+                recipient_label="cold-wallet",
+            )
+
+    def test_surrounding_whitespace_is_stripped_rather_than_mismatching(self) -> None:
+        token = mint(_claims(), secret=_SECRET)
+
+        result = _verify(token, expected=_binding(recipient_label=" cold-wallet "))
+
+        assert isinstance(result, Verified)
+
+
+class TestDetailIsSafeToRecord:
+    """Details land in ``approvals.reason`` and in logs, so they can't be a
+    channel for whoever presented the token."""
+
+    def test_a_hostile_scheme_is_truncated_and_stripped(self) -> None:
+        hostile = "x" * 500 + "\n\x1b[31mFAKE AUDIT LINE"
+
+        result = _verify(f"{hostile}.abc.def")
+
+        assert isinstance(result, Rejected)
+        assert result.reason is Rejection.UNKNOWN_SCHEME
+        assert len(result.detail) <= 32
+        assert "\n" not in result.detail and "\x1b" not in result.detail
+
+    def test_claims_invalid_names_the_fields_and_not_the_values(self) -> None:
+        payload = b'{"proposal_hash":"nope","subject":"secret-ish","jti":"not-a-uuid"}'
+        forged = f"{TOKEN_SCHEME}.{_b64u(payload)}.{_b64u(_mac_for_test(payload))}"
+
+        result = _verify(forged)
+
+        assert isinstance(result, Rejected)
+        assert result.reason is Rejection.CLAIMS_INVALID
+        assert "proposal_hash" in result.detail
+        assert "secret-ish" not in result.detail
 
 
 def test_the_token_is_url_safe_and_carries_no_padding() -> None:
@@ -294,6 +422,16 @@ def test_the_secret_never_appears_in_the_token() -> None:
 
 
 def _b64u(raw: bytes) -> str:
-    import base64
-
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _b64u_decode_lax(text: str) -> bytes:
+    """Decode the way the module used to — permissively — so a test can *find* the
+    alternative spellings the strict decoder now refuses."""
+    return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+
+
+def _mac_for_test(payload: bytes) -> bytes:
+    """Sign an arbitrary payload with the real key: the "authentic but
+    unacceptable" cases can't be produced through ``mint``, which validates."""
+    return _mac(TOKEN_SCHEME, payload, _SECRET)
