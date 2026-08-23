@@ -18,11 +18,23 @@ often mistaken for the whole boundary:
 So: two domains sharing a Postgres server share no credential, and neither
 process is ever handed the other's.
 
-The token secret, OIDC settings, and chain settings arrive with their own tasks
-(T13, T15, T17).
+The OIDC settings and chain settings arrive with their own tasks (T15, T17).
 """
 
+from typing import Self
+
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from hodlin_execute.gate.token import MIN_SECRET_BYTES
+
+#: Substrings that mean "nobody generated this yet". A length floor alone can't
+#: catch a placeholder — a memorable sentence is easily long enough — and a
+#: placeholder HMAC key is the one fake credential that *works*, silently, with a
+#: value anyone can read in the repository. Every other secret here fails on
+#: first use because the remote service rejects it; this one has no remote
+#: service to refuse it, so the refusal has to live here.
+_PLACEHOLDER_MARKERS = ("generate", "change-me", "changeme", "your-", "example", "placeholder")
 
 
 class Settings(BaseSettings):
@@ -38,3 +50,28 @@ class Settings(BaseSettings):
     # ``+asyncpg`` driver, and that this points at ``hodlin_execute``, reachable
     # only by the ``hodlin_execute`` role (docker/postgres-init/10-domains.sql).
     database_url: str
+
+    # The HMAC key every authorization token is minted and verified with (T13,
+    # D15). ``SecretStr`` so it can't be printed by an accidental ``repr`` of the
+    # settings object — the value that makes every token forgeable is exactly the
+    # one that must never reach a log line. Length is enforced here as well as in
+    # the token module, because a short key is a silent weakening rather than a
+    # failure: nothing misbehaves, the MAC is just cheap to brute-force.
+    token_secret: SecretStr = Field(min_length=MIN_SECRET_BYTES)
+
+    @model_validator(mode="after")
+    def _token_secret_is_not_a_placeholder(self) -> Self:
+        secret = self.token_secret.get_secret_value().casefold()
+        for marker in _PLACEHOLDER_MARKERS:
+            if marker in secret:
+                raise ValueError(
+                    f"token_secret looks like the committed placeholder (contains {marker!r}); "
+                    "generate one with `openssl rand -base64 48`"
+                )
+        return self
+
+    @property
+    def token_secret_bytes(self) -> bytes:
+        """The key as the HMAC wants it. One place does this conversion, so no
+        call site has to decide an encoding for a key."""
+        return self.token_secret.get_secret_value().encode("utf-8")

@@ -21,6 +21,7 @@ from hodlin_contracts.proposal import (
     ProposalLike,
     ProposalV1_0,
     ProposalV1_1,
+    UtcDatetime,
     is_expired,
     parse_proposal,
 )
@@ -42,6 +43,7 @@ __all__ = [
     "ProposalLike",
     "ProposalV1_0",
     "ProposalV1_1",
+    "UtcDatetime",
     "canonical_bytes",
     "canonical_hash",
     "canonical_json",
